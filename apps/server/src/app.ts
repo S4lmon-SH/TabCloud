@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { WebSocketServer } from 'ws';
 import { LIMITS } from '@tabcloud/shared';
@@ -30,12 +30,47 @@ export async function buildServer(options: ServerOptions = {}): Promise<TabCloud
     if (config.allowedOrigins.includes(origin)) return true;
     return origin === `http://${host}` || origin === `https://${host}`;
   };
+  const isApi = (url: string): boolean => url.split('?')[0] === '/healthz' || url.startsWith('/api/');
+  const vary = (reply: FastifyReply, ...names: string[]): void => {
+    const current = reply.getHeader('Vary');
+    const values = (Array.isArray(current) ? current.join(',') : String(current ?? '')).split(',').map((value) => value.trim()).filter(Boolean);
+    if (values.includes('*')) return;
+    for (const name of names) if (!values.some((value) => value.toLowerCase() === name.toLowerCase())) values.push(name);
+    reply.header('Vary', values.join(', '));
+  };
 
-  app.addHook('onSend', async (_request, reply, payload) => {
+  app.addHook('onRequest', async (request, reply) => {
+    if (isApi(request.url) && request.headers.origin && !allowedOrigin(request.headers.origin, request.headers.host)) {
+      return reply.code(403).send({ code: 'ORIGIN_REJECTED', message: '허용되지 않은 출처입니다.' });
+    }
+  });
+
+  const preflight = async (request: FastifyRequest, reply: FastifyReply) => {
+    vary(reply, 'Access-Control-Request-Method', 'Access-Control-Request-Headers');
+    const method = request.headers['access-control-request-method'];
+    const headers = request.headers['access-control-request-headers'];
+    if (!request.headers.origin || typeof method !== 'string') {
+      return reply.code(400).send({ code: 'INVALID_PREFLIGHT', message: '출처와 요청 메서드가 필요합니다.' });
+    }
+    if (!['GET', 'POST', 'PUT'].includes(method) || (headers !== undefined && (typeof headers !== 'string' || headers.split(',').some((header) => !['authorization', 'content-type'].includes(header.trim().toLowerCase()))))) {
+      return reply.code(403).send({ code: 'PREFLIGHT_REJECTED', message: '허용되지 않은 요청입니다.' });
+    }
+    return reply.code(204).header('Access-Control-Allow-Methods', 'GET, POST, PUT').header('Access-Control-Allow-Headers', 'Authorization, Content-Type').send();
+  };
+  app.options('/api/*', preflight);
+  app.options('/healthz', preflight);
+
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (isApi(request.url)) {
+      vary(reply, 'Origin');
+      // Same-origin requests need no CORS grant. Cross-origin clients must be explicitly configured.
+      if (request.headers.origin && config.allowedOrigins.includes(request.headers.origin)) reply.header('Access-Control-Allow-Origin', request.headers.origin);
+    }
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('X-Frame-Options', 'DENY');
     reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    // CORP restricts no-cors embeds; authenticated CORS fetches can still create local Blob URLs.
     reply.header('Cross-Origin-Resource-Policy', 'same-origin');
     reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'");
     return payload;

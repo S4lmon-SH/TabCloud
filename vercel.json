@@ -1,0 +1,23 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "node scripts/validate-web-deployment.mjs && pnpm --filter @tabcloud/web build",
+  "outputDirectory": "apps/web/dist",
+  "rewrites": [
+    { "source": "/studio/:path*", "destination": "/index.html" },
+    { "source": "/room/:path*", "destination": "/index.html" },
+    { "source": "/fractal", "destination": "/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" }
+      ]
+    }
+  ]
+}

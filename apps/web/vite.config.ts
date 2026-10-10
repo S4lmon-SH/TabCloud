@@ -6,6 +6,7 @@ export default defineConfig(({ mode }) => {
   const environment = loadEnv(mode, fileURLToPath(new URL('../..', import.meta.url)), '');
   const serverPort = process.env.PORT || environment.PORT || '3001';
   return {
+  envDir: fileURLToPath(new URL('../..', import.meta.url)),
   plugins: [react()],
   server: {
     host: '0.0.0.0',

@@ -85,6 +85,8 @@ E2E는 방장과 참여자 두 명의 독립 컨텍스트에서 실제 Worker �
 
 ## Docker
 
+Vercel에 웹 화면을 배포할 때는 렌더링 서버를 별도 단일 인스턴스에 연결합니다. [Vercel + Render 배포 절차](docs/DEPLOYMENT.md#vercel--render)를 참고하세요. 루트의 `vercel.json`과 `render.yaml`에 설정을 준비했습니다.
+
 ```sh
 docker compose up --build -d
 docker compose logs -f tabcloud

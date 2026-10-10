@@ -3,6 +3,7 @@ import { checksum, createTiles, mergeTile } from '@tabcloud/compute';
 import { DEFAULT_SETTINGS, LIMITS, renderSettingsSchema, serverMessageSchema, type ClientMessage, type RenderSettings, type RoomSnapshot, type TileTask } from '@tabcloud/shared';
 import type { WorkerResponse } from './worker.types';
 import { DEFAULT_DEMO_SETTINGS, RENDER_PRESETS } from './render-presets';
+import { apiUrl, websocketUrl } from './api-origin';
 
 type Connection = 'connecting' | 'connected' | 'reconnecting' | 'error';
 type Lease = { task: TileTask; attemptId: string; lastProgressAt: number };
@@ -33,7 +34,7 @@ function Home() {
   async function createRoom() {
     setCreating(true); setError('');
     try {
-      const response = await fetch('/api/rooms', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const response = await fetch(apiUrl('/api/rooms'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       if (!response.ok) throw new Error(response.status === 429 ? '방 생성 요청이 많습니다. 잠시 후 다시 시도해 주세요.' : '서버에 연결할 수 없습니다. 서버 실행 상태를 확인해 주세요.');
       const room = await response.json() as { roomId: string; inviteToken: string; hostToken: string };
       sessionStorage.setItem(`tabcloud:host:${room.roomId}`, room.hostToken);
@@ -215,7 +216,9 @@ function Room({ roomId, inviteToken }: { roomId: string; inviteToken: string }) 
     function connect() {
       if (disposed || fatal) return;
       setConnection(reconnectAttempts ? 'reconnecting' : 'connecting');
-      const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`);
+      let socket: WebSocket;
+      try { socket = new WebSocket(websocketUrl('/ws')); }
+      catch (err) { fatal = true; setConnection('error'); setError(err instanceof Error ? err.message : '서버 주소 설정을 확인해 주세요.'); return; }
       socketRef.current = socket;
       socket.onopen = () => {
         if (disposed) return;

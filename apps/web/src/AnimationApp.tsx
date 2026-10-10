@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ANIMATION_LIMITS, ANIMATION_PRESETS, DEFAULT_ANIMATION_SETTINGS, animationSettingsSchema, type AnimationAssignment, type AnimationJoinResult, type AnimationRoomCreated, type AnimationSettings, type AnimationSnapshot, type AnimationTaskResult } from '@tabcloud/shared';
 import type { AnimationWorkerResponse } from './animation.worker';
+import { ApiConfigurationError, apiUrl } from './api-origin';
 
 type Connection = 'connecting' | 'online' | 'error';
 type RoomActions = { consent: (enabled: boolean) => Promise<void>; start: (settings: AnimationSettings) => Promise<void>; cancel: () => Promise<void> };
@@ -33,7 +34,7 @@ function Home() {
   async function createRoom() {
     setCreating(true); setError('');
     try {
-      const room = await readResponse<AnimationRoomCreated>(await fetch('/api/animation/rooms', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(10_000) }));
+      const room = await readResponse<AnimationRoomCreated>(await fetch(apiUrl('/api/animation/rooms'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(10_000) }));
       sessionStorage.setItem(hostKey(room.roomId), room.hostToken);
       location.assign(`/studio/${encodeURIComponent(room.roomId)}#invite=${encodeURIComponent(room.inviteToken)}`);
     } catch (err) { setError(err instanceof Error ? err.message : '방을 만들지 못했어요.'); setCreating(false); }
@@ -98,7 +99,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
     tokenRef.current = token;
 
     async function api<T>(suffix: string, body?: unknown, method = body === undefined ? 'GET' : 'POST'): Promise<T> {
-      return readResponse<T>(await fetch(`${endpoint}${suffix}`, { method, headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10_000) }));
+      return readResponse<T>(await fetch(apiUrl(`${endpoint}${suffix}`), { method, headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10_000) }));
     }
     function destroyWorker(resetConsent = true) {
       generation += 1; worker?.terminate(); worker = null; lease = null; requesting = false;
@@ -124,7 +125,8 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
       if (disposed) return;
       destroyWorker(); setConnection('error');
       needsConsentReset = Boolean(token);
-      setError(err instanceof RequestError ? err.message : '연결이 끊겼어요. 다시 연결되면 연산 참여를 눌러 주세요.');
+      setError(err instanceof RequestError || err instanceof ApiConfigurationError ? err.message : '연결이 끊겼어요. 다시 연결되면 연산 참여를 눌러 주세요.');
+      if (err instanceof ApiConfigurationError) fatal = true;
       if (err instanceof RequestError && [401, 403].includes(err.status)) { if (!token) fatal = true; token = ''; tokenRef.current = ''; sessionStorage.removeItem(participantKey(roomId)); }
       if (err instanceof RequestError && err.status === 404) fatal = true;
     }
@@ -177,7 +179,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
           const query = new URLSearchParams({ ...ids, computeMs: String(data.computeMs) });
           const signal = AbortSignal.any([uploadAbort.signal, AbortSignal.timeout(60_000)]);
           for (let retry = 0; ; retry += 1) {
-            const response = await fetch(`${endpoint}/result?${query}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' }, body: data.pixels, signal });
+            const response = await fetch(apiUrl(`${endpoint}/result?${query}`), { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' }, body: data.pixels, signal });
             if (response.status !== 429 || retry >= 5) { await readResponse<{ accepted: true }>(response); break; }
             await response.body?.cancel();
             const delay = Math.min(1000, 250 * 2 ** retry) + Math.random() * 150;
@@ -234,8 +236,8 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
     async function join() {
       let name = sessionStorage.getItem('tabcloud:name');
       if (!name) { name = `브라우저 ${Math.random().toString(36).slice(2, 6).toUpperCase()}`; sessionStorage.setItem('tabcloud:name', name); }
-      const result = await readResponse<AnimationJoinResult>(await fetch(`${endpoint}/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ inviteToken, hostToken: sessionStorage.getItem(hostKey(roomId)) || undefined, name }), signal: AbortSignal.timeout(10_000) }));
-      if (disposed) { void fetch(`${endpoint}/leave`, { method: 'POST', headers: { Authorization: `Bearer ${result.participantToken}`, 'Content-Type': 'application/json' }, body: '{}', keepalive: true }).catch(() => {}); return; }
+      const result = await readResponse<AnimationJoinResult>(await fetch(apiUrl(`${endpoint}/join`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ inviteToken, hostToken: sessionStorage.getItem(hostKey(roomId)) || undefined, name }), signal: AbortSignal.timeout(10_000) }));
+      if (disposed) { void fetch(apiUrl(`${endpoint}/leave`), { method: 'POST', headers: { Authorization: `Bearer ${result.participantToken}`, 'Content-Type': 'application/json' }, body: '{}', keepalive: true }).catch(() => {}); return; }
       token = result.participantToken; tokenRef.current = token; sessionStorage.setItem(participantKey(roomId), token);
       apply(result.snapshot);
     }
@@ -256,7 +258,9 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
     function leave() {
       pageHidden = true;
       destroyWorker();
-      if (token) void fetch(`${endpoint}/leave`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}', keepalive: true }).catch(() => {});
+      try {
+        if (token) void fetch(apiUrl(`${endpoint}/leave`), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}', keepalive: true }).catch(() => {});
+      } catch { /* Invalid API configuration was already reported while connecting. */ }
     }
     function restore(event: PageTransitionEvent) {
       if (!event.persisted || disposed) return;
@@ -286,7 +290,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
     const controller = new AbortController();
     void (async () => {
       try {
-        const response = await fetch(`${endpoint}/preview/${encodeURIComponent(jobId)}/${currentPreview}.png`, { headers: { Authorization: `Bearer ${tokenRef.current}` }, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
+        const response = await fetch(apiUrl(`${endpoint}/preview/${encodeURIComponent(jobId)}/${currentPreview}.png`), { headers: { Authorization: `Bearer ${tokenRef.current}` }, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
         if (!response.ok) return;
         const blob = await response.blob();
         if (controller.signal.aborted) return;
@@ -303,7 +307,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
     setVideoError('');
     void (async () => {
       try {
-        const response = await fetch(`${endpoint}/video/${encodeURIComponent(jobId)}.mp4`, { headers: { Authorization: `Bearer ${tokenRef.current}` }, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]) });
+        const response = await fetch(apiUrl(`${endpoint}/video/${encodeURIComponent(jobId)}.mp4`), { headers: { Authorization: `Bearer ${tokenRef.current}` }, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]) });
         if (!response.ok) throw new Error('영상을 가져오지 못했어요.');
         const blob = await response.blob();
         if (controller.signal.aborted) return;

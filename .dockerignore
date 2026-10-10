@@ -7,4 +7,5 @@ node_modules
 test-results
 playwright-report
 .qa
+.vercel
 *.log

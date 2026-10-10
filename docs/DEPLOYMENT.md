@@ -14,6 +14,25 @@ pnpm start
 
 영상 모드는 의존성 설치 시 내려받은 `ffmpeg-static` 실행 파일을 사용합니다. 시스템 FFmpeg를 사용하려면 `FFMPEG_PATH`에 실행 파일 절대 경로를 지정하세요. 서버의 OS 임시 디렉터리에 프레임·영상을 저장하므로 쓰기 권한과 최소 1.5GiB 이상의 여유 공간을 확보합니다. 동시에 렌더링·인코딩하는 작업은 2개이며, 완료 결과도 저장 예산을 차지합니다. 방 상태는 인메모리이고 영상 파일도 임시 보관이므로 영속 저장소로 사용하지 않습니다. 자세한 처리 범위는 [영상 렌더팜 가이드](ANIMATION.md)에 있습니다.
 
+## Vercel + Render
+
+Vercel은 React 정적 화면을 제공하고, Render의 단일 Docker 인스턴스가 방·작업·FFmpeg를 관리합니다. 웹의 `VITE_API_ORIGIN`은 서버 주소이고 서버의 `PUBLIC_ORIGIN`은 허용할 웹 주소입니다. 둘 다 경로·끝 슬래시 없는 정확한 HTTPS origin을 사용합니다. 초대 링크는 웹 주소를 유지합니다.
+
+현재 구현의 방 상태는 프로세스 메모리에, 영상 프레임은 해당 인스턴스의 임시 디스크에 있습니다. Vercel은 WebSocket과 컨테이너를 지원하지만, 여러 요청이나 참가자가 동일 인스턴스로 연결되는 것을 보장하지 않습니다. 따라서 이 서버를 그대로 Vercel Functions에 옮기지 않습니다. 참고: [Vercel 상태 관리](https://vercel.com/docs/functions/websockets#manage-persistent-state), [컨테이너 런타임](https://vercel.com/docs/functions/runtimes/container).
+
+1. [Render Blueprint 배포](https://dashboard.render.com/select-repo?type=blueprint&repo=https%3A%2F%2Fgithub.com%2FS4lmon-SH%2FTabCloud)를 열고 로그인한 후 저장소의 `render.yaml`을 사용합니다. `tabcloud-api` 웹 서비스 1개, Docker, Singapore, **Free** 설정입니다. 결제 수단·유료 업그레이드가 필요한 화면이면 먼저 중단하고 비용을 확인하세요.
+2. Blueprint의 `PUBLIC_ORIGIN` 기본값은 이 프로젝트의 Vercel 도메인 `https://tabcloud-silk.vercel.app`입니다. 다른 Vercel 프로젝트에서는 실제 도메인으로 바꿉니다. 미리보기 배포까지 허용하려면 그 주소를 쉼표로 추가합니다. `*.vercel.app` 같은 와일드카드는 사용하지 않습니다.
+3. 서버 배포 완료 후 `https://실제서버.onrender.com/healthz`의 `{"status":"ok"}`를 확인합니다. Render가 배정한 실제 URL을 사용하며 `tabcloud-api.onrender.com`이라고 추측하지 않습니다.
+4. Vercel 프로젝트를 저장소 루트에 연결하고 Production 환경변수 `VITE_API_ORIGIN=https://실제서버.onrender.com`을 설정합니다. `vercel.json`에 Vite, pnpm 설치, 웹 빌드, 출력 경로 `apps/web/dist`, 방 URL 새로고침 rewrite가 정의돼 있습니다.
+5. Vercel CLI로 `pnpm dlx vercel@63.1.2 --prod`를 실행하거나 대시보드에서 배포합니다. 배포 빌드는 서버 주소와 `/healthz`를 먼저 검증합니다. 서버 미연결 상태를 배포 성공으로 처리하지 않습니다.
+6. Vercel 주소에서 방 생성→다른 브라우저 초대→연산 참여→미리보기 렌더→MP4 재생을 확인합니다. 프랙털의 WebSocket도 `wss://실제서버/ws`로 연결합니다. 한 대의 Render 서버만 실행하며 수평 확장은 지원하지 않습니다.
+
+CLI로 프로젝트 환경변수를 설정할 때는 `pnpm dlx vercel@63.1.2 env add VITE_API_ORIGIN production`의 입력란에 서버 origin을 넣습니다. 주소 변경은 웹 재빌드가 필요합니다. 로컬에서 분리 배포를 점검할 때도 루트 `.env`의 `VITE_API_ORIGIN`을 사용할 수 있으며, 값을 없애면 기존 동일 출처 실행을 유지합니다.
+
+Render Free는 시연용입니다. 15분간 유입 트래픽이 없으면 절전되며 다음 접속에 약 1분이 걸릴 수 있습니다. 재시작·재배포·절전 시 방과 결과가 사라지고, 무료 서비스는 예고 없이 재시작될 수도 있습니다. 이 경우 새 방을 만드세요. 무료 한도와 결제 수단 유무에 따라 초과 사용 시 정지 또는 추가 요금이 적용됩니다. 자세한 제한은 [Render 공식 문서](https://render.com/docs/free)를 확인하세요. 운영용 상시 가동·무중단·영속 저장을 보장하는 구성은 아닙니다.
+
+Render 자동 재배포는 진행 중인 방을 끊지 않도록 꺼 두었습니다. 변경 반영 시 대시보드에서 수동 배포합니다. Vercel과 Render 계정의 인증정보는 소스나 환경 예시에 넣지 않습니다. `.vercel/`, `.env.local`은 Git과 Docker 빌드 컨텍스트에서 제외됩니다.
+
 ## Docker / Compose
 
 Docker Desktop에서는 Linux 컨테이너 엔진을 켜세요. Compose 2.24 이상을 사용합니다.

@@ -1,0 +1,28 @@
+# One instance owns all room state and temporary frames. Do not enable scaling.
+services:
+  - type: web
+    name: tabcloud-api
+    runtime: docker
+    repo: https://github.com/S4lmon-SH/TabCloud
+    branch: main
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: "3001"
+      - key: PUBLIC_ORIGIN
+        value: https://tabcloud-silk.vercel.app
+      - key: MAX_ROOMS
+        value: "8"
+      - key: MAX_PARTICIPANTS
+        value: "12"
+      - key: MAX_CONNECTIONS
+        value: "96"
