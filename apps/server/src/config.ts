@@ -4,6 +4,7 @@ export interface ServerConfig {
   heartbeatTimeoutMs: number;
   leaseMs: number;
   maxAttemptMs: number;
+  animationMaxAttemptMs: number;
   maxJobMs: number;
   sweepIntervalMs: number;
   maxRetries: number;
@@ -25,6 +26,7 @@ export const DEFAULT_CONFIG: ServerConfig = {
   heartbeatTimeoutMs: 20_000,
   leaseMs: 15_000,
   maxAttemptMs: 120_000,
+  animationMaxAttemptMs: 600_000,
   maxJobMs: 600_000,
   sweepIntervalMs: 1_000,
   maxRetries: 5,

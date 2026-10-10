@@ -3,14 +3,14 @@ import type { AnimationSettings, FrameTask } from '@tabcloud/shared';
 type Pixel = [number, number, number, number];
 type Vec3 = [number, number, number];
 
-interface Sphere {
+export interface AnimationSphere {
   x: number; y: number; z: number; radius: number;
   r: number; g: number; b: number; reflection: number; roughness: number;
 }
 
-interface Scene {
+export interface AnimationScene {
   settings: AnimationSettings;
-  spheres: Sphere[];
+  spheres: AnimationSphere[];
   camera: Vec3;
   forward: Vec3;
   right: Vec3;
@@ -18,6 +18,8 @@ interface Scene {
   light: Vec3;
   frameIndex: number;
 }
+
+type Scene = AnimationScene;
 
 const TAU = Math.PI * 2;
 const EPSILON = 0.0001;
@@ -40,7 +42,7 @@ function normalized(x: number, y: number, z: number): Vec3 {
   return [x * scale, y * scale, z * scale];
 }
 
-function prepareScene(settings: AnimationSettings, frameIndex: number): Scene {
+export function prepareAnimationScene(settings: AnimationSettings, frameIndex: number): AnimationScene {
   assertSettings(settings, frameIndex);
   // Time depends on the requested frame, never on the order or speed of rendering.
   const phase = TAU * frameIndex / settings.frames;
@@ -235,8 +237,16 @@ function pixel(scene: Scene, x: number, y: number): Pixel {
 
 /** Independently reproducible validation pixel. Samples never depend on adjacent pixels or task order. */
 export function renderAnimationPixel(settings: AnimationSettings, frameIndex: number, x: number, y: number): Pixel {
-  const scene = prepareScene(settings, frameIndex);
+  const scene = prepareAnimationScene(settings, frameIndex);
   if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= settings.width || y < 0 || y >= settings.height) {
+    throw new RangeError('Pixel lies outside the animation frame.');
+  }
+  return pixel(scene, x, y);
+}
+
+/** Reuse the same prepared scene when correcting GPU pixels at floating-point boundaries. */
+export function renderAnimationScenePixel(scene: AnimationScene, x: number, y: number): Pixel {
+  if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= scene.settings.width || y < 0 || y >= scene.settings.height) {
     throw new RangeError('Pixel lies outside the animation frame.');
   }
   return pixel(scene, x, y);
@@ -244,14 +254,14 @@ export function renderAnimationPixel(settings: AnimationSettings, frameIndex: nu
 
 function taskScene(task: FrameTask): Scene {
   if (task.algorithmVersion !== 'raytrace-v1') throw new RangeError('Unsupported animation algorithm.');
-  return prepareScene(task.settings, task.frameIndex);
+  return prepareAnimationScene(task.settings, task.frameIndex);
 }
 
-function renderRows(scene: Scene, output: Uint8ClampedArray, start: number, end: number): void {
+function renderRows(scene: Scene, output: Uint8ClampedArray, start: number, end: number, outputStartRow = 0): void {
   for (let y = start; y < end; y += 1) {
     for (let x = 0; x < scene.settings.width; x += 1) {
       const rgba = pixel(scene, x, y);
-      const offset = (y * scene.settings.width + x) * 4;
+      const offset = ((y - outputStartRow) * scene.settings.width + x) * 4;
       output[offset] = rgba[0]; output[offset + 1] = rgba[1]; output[offset + 2] = rgba[2]; output[offset + 3] = 255;
     }
   }
@@ -294,6 +304,84 @@ export async function renderAnimationFrameAsync(task: FrameTask, options: AsyncA
     const error = new Error('Animation rendering cancelled.');
     error.name = 'AbortError';
     throw error;
+  }
+  return output;
+}
+
+export interface AsyncAnimationRowsOptions extends AsyncAnimationOptions {
+  /** Fraction of time this Worker may spend computing, between 0 (exclusive) and 1. */
+  dutyCycle?: number;
+  /** Adaptive chunk target; a single expensive row can still take longer. */
+  targetChunkMs?: number;
+  onActiveTime?: (chunkComputeMs: number) => void;
+  /** Injectable monotonic clock and delay for deterministic budget tests. */
+  now?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
+}
+
+function assertNotAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error('Animation rendering cancelled.');
+  error.name = 'AbortError';
+  throw error;
+}
+
+function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  assertNotAborted(signal);
+  return new Promise<void>((resolve, reject) => {
+    const finish = () => { signal?.removeEventListener('abort', abort); resolve(); };
+    const timer = setTimeout(finish, milliseconds);
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      const error = new Error('Animation rendering cancelled.');
+      error.name = 'AbortError';
+      reject(error);
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+  });
+}
+
+/**
+ * Render an independently schedulable row strip into a compact RGBA buffer.
+ * Progress is relative to this strip; pixel seeds use absolute frame coordinates.
+ * Each measured compute burst is followed by its proportional idle time, including
+ * the final burst so repeatedly scheduled short strips respect the same budget.
+ */
+export async function renderAnimationRowsAsync(task: FrameTask, startRow: number, rowCount: number,
+  options: AsyncAnimationRowsOptions = {}): Promise<Uint8ClampedArray> {
+  const scene = taskScene(task);
+  if (!Number.isInteger(startRow) || !Number.isInteger(rowCount) || startRow < 0 || rowCount < 1
+    || startRow + rowCount > task.settings.height) throw new RangeError('Row strip lies outside the animation frame.');
+  const maxChunk = options.rowsPerChunk ?? 8;
+  const dutyCycle = options.dutyCycle ?? 1;
+  const targetChunkMs = options.targetChunkMs ?? 8;
+  if (!Number.isInteger(maxChunk) || maxChunk < 1 || maxChunk > 32) throw new RangeError('Invalid rowsPerChunk.');
+  if (!Number.isFinite(dutyCycle) || dutyCycle <= 0 || dutyCycle > 1) throw new RangeError('Invalid dutyCycle.');
+  if (!Number.isFinite(targetChunkMs) || targetChunkMs < 1 || targetChunkMs > 50) throw new RangeError('Invalid targetChunkMs.');
+  assertNotAborted(options.signal);
+  const output = new Uint8ClampedArray(task.settings.width * rowCount * 4);
+  const now = options.now ?? (() => performance.now());
+  const sleep = options.sleep ?? ((milliseconds: number) => delay(milliseconds, options.signal));
+  let chunkRows = 1;
+  let completed = 0;
+  while (completed < rowCount) {
+    assertNotAborted(options.signal);
+    const count = Math.min(chunkRows, rowCount - completed);
+    const started = now();
+    renderRows(scene, output, startRow + completed, startRow + completed + count, startRow);
+    const activeMs = Math.max(0, now() - started);
+    completed += count;
+    options.onActiveTime?.(activeMs);
+    options.onProgress?.(completed);
+    assertNotAborted(options.signal);
+    // Sleep is rounded upward: timer resolution must not silently exceed a small requested budget.
+    const idleMs = Math.ceil(activeMs * (1 / dutyCycle - 1));
+    if (idleMs > 0) await sleep(idleMs);
+    else if (completed < rowCount) await (options.yieldControl?.() ?? sleep(0));
+    assertNotAborted(options.signal);
+    // Limit growth to twice the preceding chunk as scene complexity changes across rows.
+    chunkRows = Math.max(1, Math.min(maxChunk, chunkRows * 2, Math.floor(targetChunkMs * count / Math.max(0.1, activeMs))));
   }
   return output;
 }

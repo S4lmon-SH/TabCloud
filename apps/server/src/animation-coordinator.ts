@@ -161,17 +161,17 @@ export class AnimationCoordinator {
   }
 
   task(auth: AnimationAuth): AnimationAssignment | null {
-    if (!auth.participant.consented) fail(403, 'CONSENT_REQUIRED', 'CPU 사용에 동의한 뒤 참여해 주세요.');
+    if (!auth.participant.consented) fail(403, 'CONSENT_REQUIRED', '기기 자원 사용에 동의한 뒤 참여해 주세요.');
     const job = auth.room.job;
     if (!job || job.public.status !== 'rendering') return null;
     const existing = job.frames.find((frame) => frame.owner === auth.participant.id && frame.attemptId === auth.participant.activeAttempt && !frame.done);
     if (existing) {
-      if (existing.expiresAt <= this.now() || this.now() - existing.startedAt >= this.config.maxAttemptMs) this.release(auth.room, existing);
+      if (existing.expiresAt <= this.now() || this.now() - existing.startedAt >= this.config.animationMaxAttemptMs) this.release(auth.room, existing);
       else return this.assignment(job, existing);
     }
     const frame = job.frames.find((entry) => !entry.done && !entry.owner && !entry.uploading);
     if (!frame || job.public.status !== 'rendering') return null;
-    frame.owner = auth.participant.id; frame.attemptId = id(); frame.startedAt = this.now(); frame.expiresAt = this.now() + this.config.leaseMs;
+    frame.owner = auth.participant.id; frame.attemptId = id(); frame.startedAt = this.now(); frame.expiresAt = this.now() + Math.min(this.config.leaseMs, this.config.animationMaxAttemptMs);
     frame.rows = 0; frame.attempts += 1;
     auth.participant.activeFrame = frame.index; auth.participant.activeAttempt = frame.attemptId;
     return this.assignment(job, frame);
@@ -185,7 +185,7 @@ export class AnimationCoordinator {
     const job = auth.room.job;
     const frame = job?.frames.find((entry) => `${job.public.id}:${entry.index}` === attempt.taskId);
     if (!job || job.public.id !== attempt.jobId || job.public.status !== 'rendering' || !frame || frame.done || frame.owner !== auth.participant.id || frame.attemptId !== attempt.attemptId
-      || !auth.participant.consented || !auth.participant.connected || frame.expiresAt <= this.now() || this.now() - frame.startedAt >= this.config.maxAttemptMs) fail(409, 'STALE_ATTEMPT', '다시 배정된 작업이에요.');
+      || !auth.participant.consented || !auth.participant.connected || frame.expiresAt <= this.now() || this.now() - frame.startedAt >= this.config.animationMaxAttemptMs) fail(409, 'STALE_ATTEMPT', '다시 배정된 작업이에요.');
     return { job, frame };
   }
 
@@ -193,7 +193,7 @@ export class AnimationCoordinator {
     const { job, frame } = this.active(auth, attempt);
     if (!Number.isInteger(rows) || rows < 0 || rows > job.public.settings.height) fail(400, 'INVALID_PROGRESS', '진행 정보가 올바르지 않아요.');
     // HTTP progress reports can arrive out of order; old rows never renew a lease.
-    if (rows > frame.rows) { frame.rows = rows; frame.expiresAt = Math.min(this.now() + this.config.leaseMs, frame.startedAt + this.config.maxAttemptMs); }
+    if (rows > frame.rows) { frame.rows = rows; frame.expiresAt = Math.min(this.now() + this.config.leaseMs, frame.startedAt + this.config.animationMaxAttemptMs); }
   }
 
   reserveUpload(auth: AnimationAuth, attempt: Attempt): UploadReservation {
@@ -215,7 +215,7 @@ export class AnimationCoordinator {
     const { auth, job, frame } = reservation;
     this.active(auth, attempt);
     const settings = job.public.settings;
-    if (pixels.length !== settings.width * settings.height * 4 || !Number.isFinite(computeMs) || computeMs < 0 || computeMs > this.config.maxAttemptMs) {
+    if (pixels.length !== settings.width * settings.height * 4 || !Number.isFinite(computeMs) || computeMs < 0 || computeMs > this.config.animationMaxAttemptMs) {
       this.release(auth.room, frame); fail(400, 'INVALID_RESULT', '프레임 크기 또는 계산 시간이 올바르지 않아요.');
     }
     for (let sample = 0; sample < 8; sample += 1) {
@@ -322,7 +322,7 @@ export class AnimationCoordinator {
       const job = room.job;
       if (!job || !['rendering', 'encoding'].includes(job.public.status)) continue;
       if (this.now() - job.public.startedAt >= JOB_DEADLINE_MS) { this.finish(room, 'failed', '작업 시간이 30분을 넘었어요. 더 가벼운 설정으로 다시 시작해 주세요.'); continue; }
-      for (const frame of job.frames) if (frame.owner && (frame.expiresAt <= this.now() || this.now() - frame.startedAt >= this.config.maxAttemptMs)) this.release(room, frame);
+      for (const frame of job.frames) if (frame.owner && (frame.expiresAt <= this.now() || this.now() - frame.startedAt >= this.config.animationMaxAttemptMs)) this.release(room, frame);
     }
   }
 

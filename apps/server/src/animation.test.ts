@@ -149,7 +149,7 @@ describe('animation HTTP renderer', () => {
   });
 
   it('only renews leases on increasing progress and caps attempts even with heartbeats', async () => {
-    const f = await fixture({ leaseMs: 500, maxAttemptMs: 2000 });
+    const f = await fixture({ leaseMs: 500, animationMaxAttemptMs: 2000 });
     await f.start(); await f.consent();
     const first = (await f.task())!;
     const attempt = { jobId: first.task.jobId, taskId: first.task.taskId, attemptId: first.attemptId };
@@ -166,6 +166,35 @@ describe('animation HTTP renderer', () => {
     f.advance(2001); f.app.animation.sweep();
     expect((await f.upload(next)).statusCode).toBe(409);
     expect((await f.state()).job?.retries).toBe(2);
+  });
+
+  it('allows low-budget frames beyond the fractal deadline but expires them at the animation deadline', async () => {
+    const f = await fixture();
+    await f.start(); await f.consent();
+    const first = (await f.task())!;
+    const progress = async (assignment: AnimationAssignment, rows: number) => {
+      f.advance(10_000);
+      return f.post('/progress', { jobId: assignment.task.jobId, taskId: assignment.task.taskId, attemptId: assignment.attemptId, rows });
+    };
+    for (let rows = 1; rows <= 13; rows += 1) expect((await progress(first, rows)).statusCode).toBe(200);
+    const accepted = await f.app.inject({ method: 'PUT', url: f.resultUrl(first, '130000'), headers: { ...f.headers(), 'content-type': 'application/octet-stream' }, payload: Buffer.from(renderAnimationFrame(first.task)) });
+    expect(accepted.statusCode, accepted.body).toBe(200);
+    expect((await f.state()).job?.computeMs).toBe(130_000);
+
+    const second = (await f.task())!;
+    for (let rows = 1; rows <= 59; rows += 1) expect((await progress(second, rows)).statusCode).toBe(200);
+    expect((await f.task())?.leaseExpiresAt).toBe(1_000_000 + 130_000 + 600_000);
+    f.advance(10_000);
+    const expired = await f.post('/progress', { jobId: second.task.jobId, taskId: second.task.taskId, attemptId: second.attemptId, rows: 60 });
+    expect(expired.statusCode).toBe(409);
+    f.app.animation.sweep();
+    expect((await f.upload(second)).statusCode).toBe(409);
+    expect((await f.state()).job?.retries).toBe(1);
+    const replacement = (await f.task())!;
+    expect(replacement.task.frameIndex).toBe(second.task.frameIndex);
+    expect(replacement.attemptId).not.toBe(second.attemptId);
+    const invalidTiming = await f.app.inject({ method: 'PUT', url: f.resultUrl(replacement, '600001'), headers: { ...f.headers(), 'content-type': 'application/octet-stream' }, payload: Buffer.from(renderAnimationFrame(replacement.task)) });
+    expect(invalidTiming.statusCode).toBe(400);
   });
 
   it('reassigns disconnected participants and bounds concurrent renders', async () => {

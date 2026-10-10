@@ -1,0 +1,170 @@
+{
+  "verifiedAt": "2026-10-11",
+  "samePhysicalMachine": true,
+  "gpu": "NVIDIA GeForce RTX 3060 Ti",
+  "adapter": "ampere",
+  "softwareAdapter": false,
+  "limitsAreRendererBudgetsNotOSUtilization": true,
+  "gpuIncludesCpuPrecisionCorrection": true,
+  "runs": [
+    {
+      "cpuPercent": 0,
+      "gpuPercent": 50,
+      "cpuWorkerScriptRequests": 0,
+      "metadata": {
+        "width": 320,
+        "height": 180,
+        "duration": 0.166667
+      },
+      "mp4Bytes": 6914,
+      "errors": [],
+      "frames": [
+        {
+          "cpuActiveMs": 0,
+          "gpuActiveMs": 107.40000001341105,
+          "completedRows": 180,
+          "trackedBytes": 230400,
+          "engine": "WebGPU · ampere"
+        },
+        {
+          "cpuActiveMs": 0,
+          "gpuActiveMs": 151.49999999254942,
+          "completedRows": 180,
+          "trackedBytes": 230400,
+          "engine": "WebGPU · ampere"
+        },
+        {
+          "cpuActiveMs": 0,
+          "gpuActiveMs": 106.89999998360872,
+          "completedRows": 180,
+          "trackedBytes": 230400,
+          "engine": "WebGPU · ampere"
+        },
+        {
+          "cpuActiveMs": 0,
+          "gpuActiveMs": 89.19999998807907,
+          "completedRows": 180,
+          "trackedBytes": 230400,
+          "engine": "WebGPU · ampere"
+        }
+      ],
+      "renderMs": 1360,
+      "encodeMs": 142
+    },
+    {
+      "cpuPercent": 25,
+      "gpuPercent": 50,
+      "cpuWorkerScriptRequests": 12,
+      "metadata": {
+        "width": 320,
+        "height": 180,
+        "duration": 0.166667
+      },
+      "mp4Bytes": 6915,
+      "errors": [],
+      "frames": [
+        {
+          "cpuActiveMs": 245.10000002384186,
+          "gpuActiveMs": 46.100000001490116,
+          "completedRows": 180,
+          "trackedBytes": 230400,
+          "engine": "CPU + WebGPU · ampere"
+        },
+        {
+          "cpuActiveMs": 192.6999999806285,
+          "gpuActiveMs": 39.399999998509884,
+          "completedRows": 180,
+          "trackedBytes": 230400,
+          "engine": "CPU + WebGPU · ampere"
+        },
+        {
+          "cpuActiveMs": 186.00000002235174,
+          "gpuActiveMs": 36.80000000447035,
+          "completedRows": 180,
+          "trackedBytes": 230400,
+          "engine": "CPU + WebGPU · ampere"
+        },
+        {
+          "cpuActiveMs": 184.90000000596046,
+          "gpuActiveMs": 37.19999999552965,
+          "completedRows": 180,
+          "trackedBytes": 230400,
+          "engine": "CPU + WebGPU · ampere"
+        }
+      ],
+      "renderMs": 690,
+      "encodeMs": 101
+    }
+  ],
+  "largeFrameParity": {
+    "available": true,
+    "label": "ampere",
+    "isFallbackAdapter": false,
+    "cases": [
+      {
+        "settings": {
+          "width": 1280,
+          "height": 720,
+          "frames": 120,
+          "fps": 24,
+          "samples": 8,
+          "bounces": 3
+        },
+        "frameIndex": 0,
+        "corrected": 75574,
+        "busyMs": 600.899999961257,
+        "differing": 183,
+        "maxDifference": 1,
+        "bad": []
+      },
+      {
+        "settings": {
+          "width": 1280,
+          "height": 720,
+          "frames": 120,
+          "fps": 24,
+          "samples": 8,
+          "bounces": 3
+        },
+        "frameIndex": 57,
+        "corrected": 70193,
+        "busyMs": 505.30000000447035,
+        "differing": 237,
+        "maxDifference": 1,
+        "bad": []
+      },
+      {
+        "settings": {
+          "width": 1280,
+          "height": 720,
+          "frames": 120,
+          "fps": 24,
+          "samples": 32,
+          "bounces": 4
+        },
+        "frameIndex": 0,
+        "corrected": 152200,
+        "busyMs": 2657.3999999910593,
+        "differing": 148,
+        "maxDifference": 1,
+        "bad": []
+      },
+      {
+        "settings": {
+          "width": 1280,
+          "height": 720,
+          "frames": 120,
+          "fps": 24,
+          "samples": 32,
+          "bounces": 4
+        },
+        "frameIndex": 57,
+        "corrected": 142135,
+        "busyMs": 2367.500000014901,
+        "differing": 220,
+        "maxDifference": 1,
+        "bad": []
+      }
+    ]
+  }
+}

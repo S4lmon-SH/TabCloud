@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ANIMATION_LIMITS, ANIMATION_PRESETS, DEFAULT_ANIMATION_SETTINGS, animationSettingsSchema, type AnimationAssignment, type AnimationJoinResult, type AnimationRoomCreated, type AnimationSettings, type AnimationSnapshot, type AnimationTaskResult } from '@tabcloud/shared';
-import type { AnimationWorkerResponse } from './animation.worker';
+import type { AnimationWorkerRequest, AnimationWorkerResponse } from './animation.worker';
 import { ApiConfigurationError, ApiReadinessError, apiUrl, waitForApiReady } from './api-origin';
+import { ResourceControls, type ResourceStats } from './ResourceControls';
+import { detectDeviceResources, normalizeResourceLimits, planResources, type ResourceLimits } from './resource-budget';
+
+const resourceStorageKey = 'tabcloud:resource-limits:v1';
+function savedResourceLimits(): ResourceLimits {
+  try { return normalizeResourceLimits(JSON.parse(localStorage.getItem(resourceStorageKey) || 'null')); }
+  catch { return normalizeResourceLimits(); }
+}
 
 type Connection = 'connecting' | 'online' | 'error';
 type RoomActions = { consent: (enabled: boolean) => Promise<void>; start: (settings: AnimationSettings) => Promise<void>; cancel: () => Promise<void> };
@@ -85,6 +93,16 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
   const [videoError, setVideoError] = useState('');
   const [clock, setClock] = useState(Date.now());
   const [videoRetry, setVideoRetry] = useState(0);
+  const [limits, setLimits] = useState(savedResourceLimits);
+  const [device, setDevice] = useState(detectDeviceResources);
+  const [resourceStats, setResourceStats] = useState<ResourceStats>();
+  const [resourceNotice, setResourceNotice] = useState('');
+  const [resourceApplying, setResourceApplying] = useState(false);
+  const resourceRevocations = useRef(0);
+  const limitsRef = useRef(limits);
+  const deviceRef = useRef(device);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const roomRef = useRef<AnimationSnapshot | null>(null);
   const tokenRef = useRef('');
   const actionsRef = useRef<RoomActions>(noActions);
@@ -93,6 +111,20 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
   const videoUrlRef = useRef('');
   const inviteLink = `${location.origin}/studio/${roomId}#invite=${encodeURIComponent(inviteToken)}`;
   const endpoint = `/api/animation/rooms/${encodeURIComponent(roomId)}`;
+
+  useEffect(() => {
+    let disposed = false;
+    // Adapter discovery does not create a GPU device or submit any computation.
+    void (async () => {
+      let available = false;
+      try { available = Boolean(await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' })); } catch { /* CPU remains available. */ }
+      if (!disposed) {
+        const detected = { ...detectDeviceResources(), gpuAvailable: available };
+        deviceRef.current = detected; setDevice(detected);
+      }
+    })();
+    return () => { disposed = true; };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -118,7 +150,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
     function destroyWorker(resetConsent = true) {
       generation += 1; worker?.terminate(); worker = null; lease = null; requesting = false;
       uploadAbort?.abort(); uploadAbort = null;
-      if (!disposed) { setActiveFrame(null); setActiveRows(0); }
+      if (!disposed) { setActiveFrame(null); setActiveRows(0); setResourceStats((previous) => previous && ({ ...previous, trackedBytes: 0 })); }
       if (resetConsent) { consent = false; if (!disposed) setConsented(false); }
     }
     function apply(snapshot: AnimationSnapshot) {
@@ -154,8 +186,14 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
         if (result.assignment) {
           if (result.assignment.task.jobId !== roomRef.current?.job?.id || roomRef.current.job.status !== 'rendering') return;
           lease = result.assignment; lastProgressAt = 0;
+          const plan = planResources(lease.task.settings, limitsRef.current, deviceRef.current);
+          if (!plan.canRender) {
+            destroyWorker(); setError(plan.reason || '현재 자원 한도로는 렌더링할 수 없어요.');
+            void api('/consent', { enabled: false }).catch(() => {});
+            return;
+          }
           setActiveFrame(lease.task.frameIndex); setActiveRows(0);
-          worker.postMessage({ task: lease.task, token: lease.attemptId });
+          worker.postMessage({ task: lease.task, token: lease.attemptId, limits: limitsRef.current, device: deviceRef.current } satisfies AnimationWorkerRequest);
         }
       } catch (err) {
         if (current !== generation || disposed) return;
@@ -175,6 +213,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
         const ids = { jobId: assignment.task.jobId, taskId: assignment.task.taskId, attemptId: assignment.attemptId };
         if (data.type === 'progress') {
           setActiveRows(data.rows);
+          setResourceStats(data.stats);
           if (performance.now() - lastProgressAt >= 1000 || data.rows === assignment.task.settings.height) {
             lastProgressAt = performance.now();
             void api('/progress', { ...ids, rows: data.rows }).catch((err) => { if (lease === assignment && !(err instanceof RequestError && err.status === 409)) disconnected(err); });
@@ -183,11 +222,12 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
         }
         if (data.type === 'error') {
           void api('/task-error', { ...ids, message: data.message.slice(0, 200) }).catch(() => {});
-          destroyWorker(); setError('이 기기의 연산이 중단됐어요. 다시 참여해 주세요.');
+          destroyWorker(); setError(data.message.slice(0, 240) || '이 기기의 연산이 중단됐어요. 자원 설정을 확인해 주세요.');
           void api('/consent', { enabled: false }).catch(() => {});
           return;
         }
         const current = generation;
+        setResourceStats(data.stats);
         uploadAbort = new AbortController();
         try {
           const query = new URLSearchParams({ ...ids, computeMs: String(data.computeMs) });
@@ -206,6 +246,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
           }
           if (disposed || current !== generation || lease !== assignment) return;
           lease = null; uploadAbort = null; setActiveFrame(null); setActiveRows(0);
+          setResourceStats((previous) => previous && ({ ...previous, trackedBytes: 0 }));
           void requestTask();
         } catch (err) {
           if (disposed || current !== generation) return;
@@ -232,13 +273,17 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
         return;
       }
       if (typeof Worker === 'undefined') { setError('Web Worker를 지원하는 최신 브라우저에서 참여해 주세요.'); return; }
+      const currentSettings = roomRef.current?.job?.settings ?? settingsRef.current;
+      const plan = planResources(animationSettingsSchema.safeParse(currentSettings).success ? currentSettings : DEFAULT_ANIMATION_SETTINGS, limitsRef.current, deviceRef.current);
+      if (!plan.canRender) { setError(plan.reason || '사용할 자원을 선택해 주세요.'); return; }
       try {
         destroyWorker();
+        setResourceNotice('');
         const current = generation;
         const snapshot = await api<AnimationSnapshot>('/consent', { enabled: true });
-        if (disposed || pageHidden || current !== generation) { void api('/consent', { enabled: false }).catch(() => {}); return; }
+        if (disposed || pageHidden || current !== generation) { await api('/consent', { enabled: false }).catch(() => {}); return; }
         apply(snapshot);
-        if (roomRef.current?.job && roomRef.current.job.status !== 'rendering') { void api('/consent', { enabled: false }).catch(() => {}); return; }
+        if (roomRef.current?.job && roomRef.current.job.status !== 'rendering') { await api('/consent', { enabled: false }).catch(() => {}); return; }
         createWorker(); consent = true; setConsented(true); void requestTask();
       } catch (err) { destroyWorker(); void api('/consent', { enabled: false }).catch(() => {}); disconnected(err); }
     }
@@ -258,6 +303,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
         const result = await readResponse<AnimationJoinResult>(await fetch(apiUrl(`${endpoint}/join`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ inviteToken, hostToken: sessionStorage.getItem(hostKey(roomId)) || undefined, name }), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) }));
         if (disposed || pageHidden || controller.signal.aborted) { void fetch(apiUrl(`${endpoint}/leave`), { method: 'POST', headers: { Authorization: `Bearer ${result.participantToken}`, 'Content-Type': 'application/json' }, body: '{}', keepalive: true }).catch(() => {}); return; }
         token = result.participantToken; tokenRef.current = token; sessionStorage.setItem(participantKey(roomId), token);
+        setError('');
         apply(result.snapshot);
       } catch (err) {
         // A failed POST may have joined on the server; don't create another participant automatically.
@@ -350,6 +396,19 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
     catch { setShowInvite(true); requestAnimationFrame(() => { inviteRef.current?.focus(); inviteRef.current?.select(); }); }
   }
   async function perform(action: () => Promise<void>) { setActionPending(true); try { await action(); } finally { setActionPending(false); } }
+  function changeResourceLimits(next: ResourceLimits) {
+    // Revoking consent synchronously terminates the coordinator and its child Workers.
+    // Keep sliders available during a pending consent response; generation guards reject it.
+    resourceRevocations.current += 1; setResourceApplying(true);
+    void actionsRef.current.consent(false).finally(() => {
+      resourceRevocations.current -= 1;
+      if (resourceRevocations.current === 0) setResourceApplying(false);
+    });
+    const normalized = normalizeResourceLimits(next);
+    limitsRef.current = normalized; setLimits(normalized);
+    try { localStorage.setItem(resourceStorageKey, JSON.stringify(normalized)); } catch { /* In-memory settings still apply. */ }
+    setResourceNotice('설정을 적용했어요. 연산 참여를 눌러 시작해 주세요.');
+  }
   function start() {
     const result = animationSettingsSchema.safeParse(settings);
     if (!result.success) { setError('해상도는 범위 안의 짝수, 나머지 설정은 표시된 범위 안의 정수로 입력해 주세요.'); return; }
@@ -359,6 +418,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
   const busy = job?.status === 'rendering' || job?.status === 'encoding';
   const editable = host && !busy && !actionPending;
   const displaySettings = job && busy ? job.settings : settings;
+  const resourcePlan = planResources(animationSettingsSchema.safeParse(displaySettings).success ? displaySettings : DEFAULT_ANIMATION_SETTINGS, limits, device);
   const resultSettings = job?.settings ?? settings;
   const frames = job?.totalFrames ?? settings.frames;
   const completed = job?.completedFrames ?? 0;
@@ -387,9 +447,9 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
           <details className="an-settings-details"><summary>직접 설정</summary><div className="an-settings-fields">{settingsFields.map((field) => <label key={field.key}>{field.label}<input className="an-input" type="number" min={field.min} max={field.max} step={field.step ?? 1} value={Number.isFinite(settings[field.key]) ? settings[field.key] : ''} disabled={!editable} onChange={(event) => setSettings((previous) => ({ ...previous, [field.key]: event.target.value === '' ? Number.NaN : Number(event.target.value) }))} /></label>)}<label>초당 프레임<input className="an-input" type="number" value={24} disabled /></label></div><p className="an-subtle-note">샘플 수가 높을수록 빛과 반사를 더 많이 계산해요.</p></details>
           <div className="an-start-action">{host ? busy ? <button className="an-button danger full" onClick={() => void perform(() => actionsRef.current.cancel())} disabled={actionPending || connection !== 'online'}><Icon type="stop" />작업 취소</button> : <button className="an-button primary full" onClick={start} disabled={actionPending || connection !== 'online'}><Icon type="play" />렌더 시작</button> : <p className="an-subtle-note">호스트가 렌더링을 시작할 수 있어요.</p>}</div>
         </section>
-        <section className="an-card an-card-pad"><div className="an-consent-head"><h2>내 기기 참여</h2><span className={`an-worker-dot ${consented ? 'active' : ''}`} /></div><p className="an-consent-copy">참여하면 이 기기의 CPU를 사용해요.<br />발열·배터리 소모가 생길 수 있으며, 언제든 중단할 수 있어요.</p>{consented && <p className="an-active-work" data-testid="worker-state">{activeFrame === null ? '다음 프레임을 기다리고 있어요.' : `${activeFrame + 1}번 프레임 계산 중 · ${Math.floor(activeRows / (job?.settings.height ?? 1) * 100)}%`}</p>}<button className={`an-button full ${consented ? 'neutral' : 'secondary'}`} onClick={() => void perform(() => actionsRef.current.consent(!consented))} disabled={actionPending || connection !== 'online' || (!consented && Boolean(job && job.status !== 'rendering'))}><Icon type={consented ? 'stop' : 'play'} />{consented ? '연산 중단' : '연산 참여'}</button></section>
+        <section className="an-card an-card-pad"><div className="an-consent-head"><h2>내 기기 참여</h2><span className={`an-worker-dot ${consented ? 'active' : ''}`} /></div><p className="an-consent-copy">선택한 자원으로 함께 계산해요.<br />발열·배터리 소모가 생길 수 있어요.</p><ResourceControls limits={limits} onChange={changeResourceLimits} device={device} plan={resourcePlan} stats={resourceStats} />{resourceNotice && <p className="an-subtle-note" role="status">{resourceNotice}</p>}{consented && <p className="an-active-work" data-testid="worker-state">{activeFrame === null ? '다음 프레임을 기다리고 있어요.' : `${activeFrame + 1}번 프레임 계산 중 · ${Math.floor(activeRows / (job?.settings.height ?? 1) * 100)}%`}</p>}<button className={`an-button full ${consented ? 'neutral' : 'secondary'}`} onClick={() => void perform(() => actionsRef.current.consent(!consented))} disabled={actionPending || resourceApplying || connection !== 'online' || (!consented && (!resourcePlan.canRender || Boolean(job && job.status !== 'rendering')))}><Icon type={consented ? 'stop' : 'play'} />{consented ? '연산 중단' : '연산 참여'}</button></section>
         <section className="an-card an-card-pad"><div className="an-participant-heading"><h2>함께하는 기기</h2><span>{connectedParticipants.length}</span></div><ul className="an-participants">{room?.participants.map((participant, index) => <li key={participant.id} className={`an-participant ${participant.connected ? '' : 'offline'}`} data-testid="participant" data-self={participant.id === room.selfId ? 'true' : 'false'} data-completed={participant.completedFrames} data-connected={participant.connected ? 'true' : 'false'}><span className="an-avatar">{String(index + 1).padStart(2, '0')}</span><div className="an-participant-name"><strong>{participant.name}{participant.id === room.selfId && <i>내 기기</i>}</strong><small>{!participant.connected ? '연결 끊김' : participant.activeFrame !== null ? '프레임 계산 중' : participant.consented ? '연산 대기 중' : '구경 중'}</small></div><span className="an-participant-contribution"><b>{participant.completedFrames}</b> 프레임</span></li>)}</ul></section>
-        <details className="an-info-details"><summary>작업 정보</summary><p>브라우저마다 Worker 1개가 3D 장면의 프레임을 계산해요. 완성된 프레임은 서버에서 MP4로 묶어요. 이 인코딩 시간도 전체 완료 시간에 포함돼요.</p>{job && <p>프레임 렌더 {seconds(job.renderMs)} · 영상 인코딩 {seconds(job.encodeMs)}<br />기기 누적 연산 {seconds(job.computeMs)} · 재배정 {job.retries}회<br />프레임 전송 {(job.resultBytes / 1024 / 1024).toFixed(1)}MB{job.videoBytes > 0 && ` · MP4 ${(job.videoBytes / 1024 / 1024).toFixed(1)}MB`}</p>}<p>같은 PC의 여러 탭은 CPU를 공유해요. 기기를 추가했을 때의 성능은 실제로 다른 기기에서 비교해 주세요. 숨겨진 탭은 느려질 수 있어요.</p><p>방은 {room ? new Date(room.expiresAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '일정 시간 후'}에 만료되며 서버 재시작 시 삭제돼요.</p></details>
+        <details className="an-info-details"><summary>작업 정보</summary><p>각 기기는 할당받은 프레임을 작은 구간으로 나눠 CPU와 GPU로 계산해요. 빠른 연산 장치가 다음 구간을 먼저 가져가요. 완성된 프레임은 서버에서 MP4로 묶어요. 이 인코딩 시간도 전체 완료 시간에 포함돼요.</p>{job && <p>프레임 렌더 {seconds(job.renderMs)} · 영상 인코딩 {seconds(job.encodeMs)}<br />기기 누적 연산 {seconds(job.computeMs)} · 재배정 {job.retries}회<br />프레임 전송 {(job.resultBytes / 1024 / 1024).toFixed(1)}MB{job.videoBytes > 0 && ` · MP4 ${(job.videoBytes / 1024 / 1024).toFixed(1)}MB`}</p>}<p>같은 PC의 여러 탭은 자원을 공유하며, 각 탭의 한도는 합산돼요. 기기를 추가했을 때의 성능은 실제로 다른 기기에서 비교해 주세요. 숨겨진 탭은 느려질 수 있어요.</p><p>방은 {room ? new Date(room.expiresAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '일정 시간 후'}에 만료되며 서버 재시작 시 삭제돼요.</p></details>
       </aside></div>
     </main></div>;
 }

@@ -1,6 +1,10 @@
 import { ALGORITHM_VERSION, renderSettingsSchema, type RenderSettings, type TileTask } from '@tabcloud/shared';
 
-export { renderAnimationPixel, renderAnimationFrame, renderAnimationFrameAsync, type AsyncAnimationOptions } from './animation';
+export {
+  renderAnimationPixel, renderAnimationFrame, renderAnimationFrameAsync, renderAnimationRowsAsync,
+  prepareAnimationScene, renderAnimationScenePixel,
+  type AsyncAnimationOptions, type AsyncAnimationRowsOptions, type AnimationScene, type AnimationSphere,
+} from './animation';
 
 export type RgbaPixel = [number, number, number, number];
 

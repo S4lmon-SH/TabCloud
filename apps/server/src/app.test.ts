@@ -3,7 +3,7 @@ import { WebSocket } from 'ws';
 import { checksum, mergeTile, renderPixel, renderTile } from '@tabcloud/compute';
 import { DEFAULT_SETTINGS, LIMITS, serverMessageSchema, type ClientMessage, type RenderSettings, type ServerMessage } from '@tabcloud/shared';
 import { buildServer, type ServerOptions, type TabCloudServer } from './app.js';
-import { configFromEnv } from './config.js';
+import { configFromEnv, DEFAULT_CONFIG } from './config.js';
 
 type Assignment = Extract<ServerMessage, { type: 'task-assigned' }>;
 type Credentials = { roomId: string; inviteToken: string; hostToken: string; expiresAt: number };
@@ -368,6 +368,11 @@ describe('configuration', () => {
     expect(() => configFromEnv({ LEASE_MS: 'NaN' })).toThrow('LEASE_MS');
     expect(() => configFromEnv({ PUBLIC_ORIGIN: 'https://tabcloud.example/path' })).toThrow('PUBLIC_ORIGIN');
     expect(configFromEnv({ MAX_RETRIES: '0' })).toEqual({ maxRetries: 0 });
+    expect(DEFAULT_CONFIG.maxAttemptMs).toBe(120_000);
+    expect(DEFAULT_CONFIG.animationMaxAttemptMs).toBe(600_000);
+    expect(configFromEnv({ ANIMATION_MAX_ATTEMPT_MS: '300000' })).toEqual({ animationMaxAttemptMs: 300_000 });
+    expect(() => configFromEnv({ ANIMATION_MAX_ATTEMPT_MS: '0' })).toThrow('ANIMATION_MAX_ATTEMPT_MS');
+    expect(() => configFromEnv({ ANIMATION_MAX_ATTEMPT_MS: 'NaN' })).toThrow('ANIMATION_MAX_ATTEMPT_MS');
     expect(() => configFromEnv({ MAX_PARTICIPANT_HISTORY: '257' })).toThrow('maxParticipants <= maxParticipantHistory <= 256');
     expect(() => configFromEnv({ MAX_PARTICIPANT_HISTORY: '10' })).toThrow('maxParticipants <= maxParticipantHistory <= 256');
     expect(() => configFromEnv({ SWEEP_INTERVAL_MS: '2147483648' })).toThrow('timer limit');
@@ -376,5 +381,6 @@ describe('configuration', () => {
   it('rejects unsupported programmatic configuration before opening server resources', async () => {
     await expect(buildServer({ maxParticipants: 257, maxParticipantHistory: 257 })).rejects.toThrow('<= 256');
     await expect(buildServer({ maxJobMs: Number.NaN })).rejects.toThrow('positive integer');
+    await expect(buildServer({ animationMaxAttemptMs: -1 })).rejects.toThrow('positive integer');
   });
 });
