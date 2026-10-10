@@ -160,3 +160,5 @@ Remove-Item Env:E2E_BASE_URL
 - Vercel 빌드 가드가 미설정 서버 주소 및 HTTP 서버 주소를 거부하는 것을 확인했다. 실제 배포는 HTTPS 서버 상태 확인을 통과해야 진행된다.
 
 위 결과는 로컬 기능 검증이다. 공개 URL에서의 최종 검증과 호스팅 계정의 실제 배포 상태를 대신하지 않는다.
+
+Render 절전 복귀에 대응하는 GET readiness 대기·재시도·취소 13개 테스트를 추가한 후 `pnpm test`는 **180개** 통과했다. ESLint·TypeScript·프로덕션 빌드도 재검증했다. 변경된 분리 출처 브라우저 smoke에서도 24프레임과 MP4 재생·다운로드·WebSocket 연결을 확인했다(각 12프레임, JavaScript 오류 없음). `.vercelignore` 적용 후 배포 dry run의 파일 목록에 `.env*`, `.qa`, `.vercel`, 의존성 및 빌드 산출물이 없는 것을 검사했다. Render의 Blueprint API 검증은 `valid: true`이며 서버의 실제 HTTPS `/healthz` 응답과 정확한 CORS 헤더도 확인했다.

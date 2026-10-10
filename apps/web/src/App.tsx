@@ -3,7 +3,7 @@ import { checksum, createTiles, mergeTile } from '@tabcloud/compute';
 import { DEFAULT_SETTINGS, LIMITS, renderSettingsSchema, serverMessageSchema, type ClientMessage, type RenderSettings, type RoomSnapshot, type TileTask } from '@tabcloud/shared';
 import type { WorkerResponse } from './worker.types';
 import { DEFAULT_DEMO_SETTINGS, RENDER_PRESETS } from './render-presets';
-import { apiUrl, websocketUrl } from './api-origin';
+import { apiUrl, waitForApiReady, websocketUrl } from './api-origin';
 
 type Connection = 'connecting' | 'connected' | 'reconnecting' | 'error';
 type Lease = { task: TileTask; attemptId: string; lastProgressAt: number };
@@ -31,15 +31,28 @@ function Home() {
   const [creating, setCreating] = useState(false);
   const [invite, setInvite] = useState('');
   const [error, setError] = useState('');
+  const createAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const leave = () => { createAbortRef.current?.abort(); setCreating(false); };
+    window.addEventListener('pagehide', leave);
+    return () => { window.removeEventListener('pagehide', leave); createAbortRef.current?.abort(); };
+  }, []);
   async function createRoom() {
+    if (createAbortRef.current) return;
+    const controller = new AbortController();
+    createAbortRef.current = controller;
     setCreating(true); setError('');
     try {
-      const response = await fetch(apiUrl('/api/rooms'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      await waitForApiReady(controller.signal);
+      controller.signal.throwIfAborted();
+      const response = await fetch(apiUrl('/api/rooms'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) });
       if (!response.ok) throw new Error(response.status === 429 ? '방 생성 요청이 많습니다. 잠시 후 다시 시도해 주세요.' : '서버에 연결할 수 없습니다. 서버 실행 상태를 확인해 주세요.');
       const room = await response.json() as { roomId: string; inviteToken: string; hostToken: string };
+      controller.signal.throwIfAborted();
       sessionStorage.setItem(`tabcloud:host:${room.roomId}`, room.hostToken);
       window.location.assign(`/room/${encodeURIComponent(room.roomId)}#invite=${encodeURIComponent(room.inviteToken)}`);
-    } catch (err) { setError(err instanceof Error ? err.message : '방을 만들지 못했습니다.'); setCreating(false); }
+    } catch (err) { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : '방을 만들지 못했습니다.'); }
+    finally { if (createAbortRef.current === controller) createAbortRef.current = null; if (!controller.signal.aborted) setCreating(false); }
   }
   function joinRoom(event: FormEvent) {
     event.preventDefault(); setError('');

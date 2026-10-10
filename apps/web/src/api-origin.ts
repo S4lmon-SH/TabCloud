@@ -1,5 +1,16 @@
 type ApiEnvironment = { configuredOrigin?: string; frontendOrigin: string; production?: boolean };
 export class ApiConfigurationError extends Error {}
+export class ApiReadinessError extends Error {
+  constructor() { super('서버 연결이 지연되고 있어요. 잠시 후 다시 시도해 주세요.'); }
+}
+
+function retryDelay(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cancelled = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', cancelled); resolve(); }, 2000);
+    if (signal.aborted) cancelled(); else signal.addEventListener('abort', cancelled, { once: true });
+  });
+}
 
 /** Only the server's origin is configurable; routes always belong to TabCloud. */
 export function createApiUrls({ configuredOrigin = '', frontendOrigin, production = false }: ApiEnvironment) {
@@ -26,7 +37,33 @@ export function createApiUrls({ configuredOrigin = '', frontendOrigin, productio
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     return url.href;
   }
-  return { api, websocket };
+  async function ready(signal?: AbortSignal, fetcher: typeof fetch = fetch): Promise<void> {
+    signal?.throwIfAborted();
+    if (!origin || origin === new URL(frontendOrigin).origin) return;
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(new ApiReadinessError()), 90_000);
+    const combined = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
+    try {
+      for (;;) {
+        combined.throwIfAborted();
+        let response: Response | undefined;
+        try { response = await fetcher(api('/healthz'), { method: 'GET', cache: 'no-store', signal: combined }); }
+        catch (err) { combined.throwIfAborted(); if (!(err instanceof TypeError)) throw err; }
+        if (response) {
+          if (response.ok) {
+            const body = await response.json().catch(() => null) as { status?: string } | null;
+            combined.throwIfAborted();
+            if (body?.status !== 'ok') throw new ApiReadinessError();
+            return;
+          }
+          await response.body?.cancel().catch(() => {});
+          if (![502, 503, 504].includes(response.status)) throw new ApiReadinessError();
+        }
+        await retryDelay(combined);
+      }
+    } finally { clearTimeout(timer); }
+  }
+  return { api, websocket, ready };
 }
 
 function currentUrls() {
@@ -35,3 +72,4 @@ function currentUrls() {
 
 export const apiUrl = (path: string) => currentUrls().api(path);
 export const websocketUrl = (path: string) => currentUrls().websocket(path);
+export const waitForApiReady = (signal?: AbortSignal) => currentUrls().ready(signal);

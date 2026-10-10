@@ -2,6 +2,10 @@
 
 링크로 연결한 브라우저들이 **3D 애니메이션의 서로 다른 프레임을 CPU Web Worker에서 렌더링**하고, 서버가 받은 프레임을 **재생 가능한 MP4 영상**으로 묶는 MVP입니다. 반사·그림자·샘플링을 실제로 계산하며, 명시적으로 **연산 참여**를 누르기 전에는 계산하지 않습니다. 기존 프랙털 데모는 `/fractal`에 보존했습니다.
 
+[TabCloud 웹](https://tabcloud-silk.vercel.app) · [서버 상태](https://tabcloud-api.onrender.com/healthz)
+
+웹은 Vercel, 렌더링 서버는 Render Free를 사용합니다. 한동안 접속하지 않았으면 서버를 깨우는 데 약 1분이 걸릴 수 있습니다. 방 생성 전 최대 90초 동안 연결을 기다립니다. 서버 재시작·절전 시 방과 결과가 초기화되는 시연용 배포입니다.
+
 ![브라우저가 함께 계산한 3D 영상](docs/assets/animation-render.png)
 
 [실제로 렌더링한 720p·5초 MP4](docs/assets/tabcloud-720p-demo.mp4) · [동일 PC의 브라우저 3개 실행 기록](docs/assets/animation-measurements.json)

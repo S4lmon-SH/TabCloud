@@ -33,6 +33,8 @@ Render Free는 시연용입니다. 15분간 유입 트래픽이 없으면 절전
 
 Render 자동 재배포는 진행 중인 방을 끊지 않도록 꺼 두었습니다. 변경 반영 시 대시보드에서 수동 배포합니다. Vercel과 Render 계정의 인증정보는 소스나 환경 예시에 넣지 않습니다. `.vercel/`, `.env.local`은 Git과 Docker 빌드 컨텍스트에서 제외됩니다.
 
+현재 연결한 주소는 웹 `https://tabcloud-silk.vercel.app`, 서버 `https://tabcloud-api.onrender.com`입니다. Vercel 프로젝트는 GitHub 저장소와 연결되어 `main` 푸시 시 웹을 다시 배포합니다. `.vercelignore`는 CLI 업로드에서도 환경 파일·QA·빌드 산출물을 제외합니다. 별도 서버에 처음 접속할 때는 브라우저가 `/healthz`를 최대 90초 기다린 뒤 방 생성/최초 참여 POST를 한 번 전송합니다. 대기 중 페이지를 떠나면 요청을 취소합니다.
+
 ## Docker / Compose
 
 Docker Desktop에서는 Linux 컨테이너 엔진을 켜세요. Compose 2.24 이상을 사용합니다.

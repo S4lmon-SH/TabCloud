@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ANIMATION_LIMITS, ANIMATION_PRESETS, DEFAULT_ANIMATION_SETTINGS, animationSettingsSchema, type AnimationAssignment, type AnimationJoinResult, type AnimationRoomCreated, type AnimationSettings, type AnimationSnapshot, type AnimationTaskResult } from '@tabcloud/shared';
 import type { AnimationWorkerResponse } from './animation.worker';
-import { ApiConfigurationError, apiUrl } from './api-origin';
+import { ApiConfigurationError, ApiReadinessError, apiUrl, waitForApiReady } from './api-origin';
 
 type Connection = 'connecting' | 'online' | 'error';
 type RoomActions = { consent: (enabled: boolean) => Promise<void>; start: (settings: AnimationSettings) => Promise<void>; cancel: () => Promise<void> };
@@ -31,13 +31,26 @@ function Home() {
   const [creating, setCreating] = useState(false);
   const [invite, setInvite] = useState('');
   const [error, setError] = useState('');
+  const createAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const leave = () => { createAbortRef.current?.abort(); setCreating(false); };
+    window.addEventListener('pagehide', leave);
+    return () => { window.removeEventListener('pagehide', leave); createAbortRef.current?.abort(); };
+  }, []);
   async function createRoom() {
+    if (createAbortRef.current) return;
+    const controller = new AbortController();
+    createAbortRef.current = controller;
     setCreating(true); setError('');
     try {
-      const room = await readResponse<AnimationRoomCreated>(await fetch(apiUrl('/api/animation/rooms'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(10_000) }));
+      await waitForApiReady(controller.signal);
+      controller.signal.throwIfAborted();
+      const room = await readResponse<AnimationRoomCreated>(await fetch(apiUrl('/api/animation/rooms'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) }));
+      controller.signal.throwIfAborted();
       sessionStorage.setItem(hostKey(room.roomId), room.hostToken);
       location.assign(`/studio/${encodeURIComponent(room.roomId)}#invite=${encodeURIComponent(room.inviteToken)}`);
-    } catch (err) { setError(err instanceof Error ? err.message : '방을 만들지 못했어요.'); setCreating(false); }
+    } catch (err) { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : '방을 만들지 못했어요.'); }
+    finally { if (createAbortRef.current === controller) createAbortRef.current = null; if (!controller.signal.aborted) setCreating(false); }
   }
   function join(event: FormEvent) {
     event.preventDefault(); setError('');
@@ -91,6 +104,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
     let polling = false;
     let generation = 0;
     let uploadAbort: AbortController | null = null;
+    let joinAbort: AbortController | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let fatal = false;
     let lastProgressAt = 0;
@@ -122,10 +136,10 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
       if (previousJob !== snapshot.job?.id) setSelectedFrame(null);
     }
     function disconnected(err: unknown) {
-      if (disposed) return;
+      if (disposed || pageHidden) return;
       destroyWorker(); setConnection('error');
       needsConsentReset = Boolean(token);
-      setError(err instanceof RequestError || err instanceof ApiConfigurationError ? err.message : '연결이 끊겼어요. 다시 연결되면 연산 참여를 눌러 주세요.');
+      setError(err instanceof RequestError || err instanceof ApiConfigurationError || err instanceof ApiReadinessError ? err.message : fatal ? '방에 연결하지 못했어요. 잠시 후 새로고침해 주세요.' : '연결이 끊겼어요. 다시 연결되면 연산 참여를 눌러 주세요.');
       if (err instanceof ApiConfigurationError) fatal = true;
       if (err instanceof RequestError && [401, 403].includes(err.status)) { if (!token) fatal = true; token = ''; tokenRef.current = ''; sessionStorage.removeItem(participantKey(roomId)); }
       if (err instanceof RequestError && err.status === 404) fatal = true;
@@ -234,12 +248,22 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
       cancel: async () => { destroyWorker(); setError(''); try { apply(await api<AnimationSnapshot>('/cancel', {})); } catch (err) { setError(err instanceof Error ? err.message : '작업을 취소하지 못했어요.'); } },
     };
     async function join() {
-      let name = sessionStorage.getItem('tabcloud:name');
-      if (!name) { name = `브라우저 ${Math.random().toString(36).slice(2, 6).toUpperCase()}`; sessionStorage.setItem('tabcloud:name', name); }
-      const result = await readResponse<AnimationJoinResult>(await fetch(apiUrl(`${endpoint}/join`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ inviteToken, hostToken: sessionStorage.getItem(hostKey(roomId)) || undefined, name }), signal: AbortSignal.timeout(10_000) }));
-      if (disposed) { void fetch(apiUrl(`${endpoint}/leave`), { method: 'POST', headers: { Authorization: `Bearer ${result.participantToken}`, 'Content-Type': 'application/json' }, body: '{}', keepalive: true }).catch(() => {}); return; }
-      token = result.participantToken; tokenRef.current = token; sessionStorage.setItem(participantKey(roomId), token);
-      apply(result.snapshot);
+      const controller = new AbortController();
+      joinAbort = controller;
+      try {
+        await waitForApiReady(controller.signal);
+        if (disposed || pageHidden || controller.signal.aborted) return;
+        let name = sessionStorage.getItem('tabcloud:name');
+        if (!name) { name = `브라우저 ${Math.random().toString(36).slice(2, 6).toUpperCase()}`; sessionStorage.setItem('tabcloud:name', name); }
+        const result = await readResponse<AnimationJoinResult>(await fetch(apiUrl(`${endpoint}/join`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ inviteToken, hostToken: sessionStorage.getItem(hostKey(roomId)) || undefined, name }), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) }));
+        if (disposed || pageHidden || controller.signal.aborted) { void fetch(apiUrl(`${endpoint}/leave`), { method: 'POST', headers: { Authorization: `Bearer ${result.participantToken}`, 'Content-Type': 'application/json' }, body: '{}', keepalive: true }).catch(() => {}); return; }
+        token = result.participantToken; tokenRef.current = token; sessionStorage.setItem(participantKey(roomId), token);
+        apply(result.snapshot);
+      } catch (err) {
+        // A failed POST may have joined on the server; don't create another participant automatically.
+        if (!disposed && !pageHidden) fatal = true;
+        throw err;
+      } finally { if (joinAbort === controller) joinAbort = null; }
     }
     async function tick() {
       if (disposed || pageHidden || polling || fatal) return;
@@ -257,6 +281,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
     }
     function leave() {
       pageHidden = true;
+      joinAbort?.abort();
       destroyWorker();
       try {
         if (token) void fetch(apiUrl(`${endpoint}/leave`), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}', keepalive: true }).catch(() => {});
