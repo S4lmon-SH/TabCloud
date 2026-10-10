@@ -1,0 +1,16 @@
+services:
+  tabcloud:
+    build: .
+    ports:
+      - "${PORT:-3001}:3001"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: 3001
+      HOST: 0.0.0.0
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:3001}
+    restart: unless-stopped
+    init: true
+    mem_limit: 768m
+    cpus: 2

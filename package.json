@@ -1,0 +1,40 @@
+{
+  "name": "tabcloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22.13.0",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c cyan,green \"pnpm --filter @tabcloud/server dev\" \"pnpm --filter @tabcloud/web dev\"",
+    "build": "pnpm typecheck && pnpm --filter @tabcloud/web build && pnpm build:server",
+    "build:server": "esbuild apps/server/src/index.ts --bundle --platform=node --target=node22 --format=cjs --external:fastify --external:ws --external:@fastify/static --external:ffmpeg-static --external:pngjs --outfile=apps/server/dist/index.cjs --sourcemap",
+    "start": "node --env-file-if-exists=.env apps/server/dist/index.cjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && pnpm typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "check": "pnpm lint && pnpm test && pnpm build && pnpm test:e2e"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^22.15.0",
+    "@types/pngjs": "^6.0.5",
+    "@types/ws": "^8.18.1",
+    "concurrently": "^9.2.0",
+    "esbuild": "^0.25.12",
+    "eslint": "^10.12.0",
+    "globals": "^16.5.0",
+    "pngjs": "^7.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0",
+    "vitest": "^3.2.7",
+    "ws": "^8.18.3"
+  }
+}
