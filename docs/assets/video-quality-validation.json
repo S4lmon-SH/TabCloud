@@ -1,7 +1,7 @@
 {
   "date": "2026-10-11",
   "scope": "1080p60 and longer uploaded videos",
-  "unitTests": 311,
+  "unitTests": 313,
   "testFiles": 18,
   "fullLocalE2E": 25,
   "finalUploadE2E": 10,
@@ -179,12 +179,12 @@
       "completedFrames": 30,
       "totalFrames": 30,
       "frameCountExact": true,
-      "renderMs": 17047,
-      "encodeMs": 838,
-      "wallMs": 17885,
-      "computeMs": 2294.7999999998137,
+      "renderMs": 20787,
+      "encodeMs": 2215,
+      "wallMs": 23002,
+      "computeMs": 2297.799999997951,
       "resultBytes": 248832000,
-      "videoBytes": 924341
+      "videoBytes": 3747078
     }
   },
   "twoMinuteBoundary": {
@@ -199,5 +199,50 @@
     "Same PC; not a distributed-device speed benchmark.",
     "No full-length 1080p60 two-minute performance claim.",
     "GPU filtering is distributed; final H.264 encoding remains on the server."
-  ]
+  ],
+  "linuxValidation": {
+    "validatedOn": "2026-10-11",
+    "environment": "Docker Desktop Linux, node:24-alpine, Alpine distribution FFmpeg",
+    "ffmpegVersion": "8.1.2",
+    "fullUnitSuite": {
+      "command": "docker run --rm --name tabcloud-quality-linux-tests -v D:\\Codex\\TabCloud\\apps\\server\\src:/app/apps/server/src:ro -v D:\\Codex\\TabCloud\\packages\\shared\\src:/app/packages/shared/src:ro tabcloud:quality-linux-ffmpeg pnpm test",
+      "filesPassed": 18,
+      "testsPassed": 313,
+      "testsFailed": 0,
+      "durationSeconds": 10.66,
+      "includesUnchangedMpegTsFixture": true
+    },
+    "boundedMemoryRegression": {
+      "command": "docker run --rm --name tabcloud-quality-memory-check --memory=512m --memory-swap=512m -v D:\\Codex\\TabCloud\\apps\\server\\src:/app/apps/server/src:ro -v D:\\Codex\\TabCloud\\packages\\shared\\src:/app/packages/shared/src:ro tabcloud:quality-linux-ffmpeg sh -c 'pnpm exec vitest run apps/server/src/video-files.test.ts --maxWorkers=1 -t \"keeps 1080p60\"; result=$?; cat /sys/fs/cgroup/memory.peak; cat /sys/fs/cgroup/memory.events; exit $result'",
+      "memoryLimitBytes": 536870912,
+      "swapEnabled": false,
+      "peakBytes": 489717760,
+      "peakMiB": 467.03125,
+      "memoryEvents": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0
+      },
+      "result": "passed",
+      "source": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 60,
+        "frames": 30
+      },
+      "segments": 8,
+      "maxFramesPerWindow": 4,
+      "rawWindowBudgetBytes": 67108864,
+      "notes": "Peak includes pnpm, Vitest, generated test source, Node pipeline, FFmpeg decoder/encoder, and charged file cache. This verifies this workload under the specified container cap; it is not a universal FFmpeg memory guarantee."
+    }
+  },
+  "frameWindows": {
+    "rawByteBudget": 67108864,
+    "1080p": 4,
+    "720p": 10,
+    "maximum": 24
+  }
 }

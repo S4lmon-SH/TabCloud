@@ -4,7 +4,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import ffmpegStatic from 'ffmpeg-static';
-import { DEFAULT_VIDEO_OUTPUT, type VideoOutputSettings, type VideoSourceSnapshot } from '@tabcloud/shared';
+import { DEFAULT_VIDEO_OUTPUT, VIDEO_LIMITS, getVideoFrameWindow, type VideoOutputSettings, type VideoSourceSnapshot } from '@tabcloud/shared';
 import { VideoFiles, type VideoPipeline } from './video-files.js';
 
 const executable = process.env.FFMPEG_PATH || ffmpegStatic!;
@@ -39,6 +39,8 @@ async function processAll(f: Awaited<ReturnType<typeof fixture>>, output: VideoO
   for (;;) {
     const window = await worker.readWindow(start);
     expect(window.end - start).toBeLessThanOrEqual(24);
+    expect(window.end - start).toBeLessThanOrEqual(getVideoFrameWindow(worker.width, worker.height));
+    expect((window.end - start) * worker.width * worker.height * 7).toBeLessThanOrEqual(VIDEO_LIMITS.rawWindowBytes);
     expect((await readdir(directory)).filter((name) => name.endsWith('.rgba'))).toHaveLength(window.end - start);
     if (window.end > start) {
       for (let frame = start; frame < window.end; frame += 1) {
@@ -78,6 +80,14 @@ describe('bounded high quality uploaded video files', () => {
     expect(result.frames).toBe(35); expect(result.windows).toBe(2);
     expect((await stat(join(f.sourceDirectory, 'upload.bin'))).size).toBeLessThan(1024 * 1024);
   }, 15_000);
+
+  it('keeps 1080p60 windows below 64 MiB throughout decoding and encoding', async () => {
+    const f = await fixture(clip({ size: '1920x1080', fps: '60', duration: 0.5,
+      extra: ['-preset', 'ultrafast', '-tune', 'zerolatency'] }));
+    const result = await processAll(f);
+    expect(result.frames).toBe(30); expect(result.windows).toBe(8);
+    expect([result.worker.width, result.worker.height, result.worker.fps]).toEqual([1920, 1080, 60]);
+  }, 30_000);
 
   it('preserves fractional frame rates exactly across output segment boundaries', async () => {
     const f = await fixture(clip({ fps: '30000/1001', duration: 1.2 }));
@@ -127,7 +137,8 @@ describe('bounded high quality uploaded video files', () => {
 
   it('rejects overlong and HDR videos explicitly', async () => {
     await expect(fixture(clip({ duration: 120.5, fps: '2', size: '32x32' }))).rejects.toThrow('120초');
-    await expect(fixture(clip({ duration: 0.1, fps: '24', extra: ['-color_trc', 'smpte2084'] }))).rejects.toThrow('HDR');
+    await expect(fixture(clip({ duration: 0.1, fps: '24',
+      extra: ['-x264-params', 'colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc'] }))).rejects.toThrow('HDR');
   });
 
   it('cancels a decoder paused by window backpressure and releases file handles', async () => {

@@ -4,7 +4,7 @@ import type { AnimationJobSnapshot, AnimationParticipant, AnimationRoomCreated, 
 export const VIDEO_ALGORITHM = 'video-filter-v1' as const;
 export const VIDEO_LIMITS = Object.freeze({ maxUploadBytes: 256 * 1024 * 1024, maxDurationSeconds: 120,
   maxWidth: 1920, maxHeight: 1920, maxLongEdge: 1920, maxShortEdge: 1080, maxFrames: 7200,
-  maxFps: 60, frameWindow: 24, maxFrameBytes: 1920 * 1080 * 4 });
+  maxFps: 60, frameWindow: 24, rawWindowBytes: 64 * 1024 * 1024, maxFrameBytes: 1920 * 1080 * 4 });
 export const VIDEO_INPUT_EXTENSIONS = ['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi', 'ts', 'mts', 'm2ts', 'mpg', 'mpeg', 'flv', '3gp'] as const;
 export const videoOutputSettingsSchema = z.object({
   resolution: z.enum(['720p', '1080p']),
@@ -16,6 +16,11 @@ export const DEFAULT_VIDEO_OUTPUT: Readonly<VideoOutputSettings> = Object.freeze
 export function isSupportedVideoDimensions(width: number, height: number): boolean {
   return Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0
     && Math.max(width, height) <= VIDEO_LIMITS.maxLongEdge && Math.min(width, height) <= VIDEO_LIMITS.maxShortEdge;
+}
+/** Bound simultaneous RGBA source + RGB result files, including each PPM header. */
+export function getVideoFrameWindow(width: number, height: number): number {
+  if (!isSupportedVideoDimensions(width, height)) throw new RangeError('Unsupported video window dimensions.');
+  return Math.min(VIDEO_LIMITS.frameWindow, Math.max(1, Math.floor(VIDEO_LIMITS.rawWindowBytes / (width * height * 7 + 128))));
 }
 /** Source dimensions already include rotation and square-pixel display aspect. Never upscale. */
 export function resolveVideoOutput(source: { width: number; height: number; fps: number }, output: VideoOutputSettings) {

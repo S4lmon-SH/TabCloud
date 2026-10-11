@@ -12,7 +12,7 @@
 
 ## 빠른 시작
 
-Node.js 24 LTS 권장(최소 22.13), pnpm 9.15.9, 최신 브라우저가 필요합니다. FFmpeg 실행 파일은 `ffmpeg-static` 의존성 설치 시 내려받습니다. 영상 프레임용 임시 디스크 공간도 필요합니다. Docker 실행에는 Docker Engine/Desktop 및 Compose 2.24 이상이 필요합니다.
+Node.js 24 LTS 권장(최소 22.13), pnpm 9.15.9, 최신 브라우저가 필요합니다. Windows에서는 설치된 `ffmpeg-static`을 기본 사용하며, Linux에서는 시스템 FFmpeg를 설치하고 `FFMPEG_PATH=/usr/bin/ffmpeg`를 지정합니다. Docker 이미지는 FFmpeg를 포함합니다. 영상 프레임용 임시 디스크 공간도 필요합니다. Docker 실행에는 Docker Engine/Desktop 및 Compose 2.24 이상이 필요합니다.
 
 ```sh
 npm install --global pnpm@9.15.9

@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 
 const requireServer = createRequire(resolve('apps/server/package.json'));
-const ffmpeg = requireServer('ffmpeg-static') as string;
+const ffmpeg = process.env.FFMPEG_PATH || requireServer('ffmpeg-static') as string;
 
 /** Generated test media only. Production processing always starts with a user upload. */
 export function makeVideoFixture(directory: string, frames = 12, width = 160, height = 96, fps = 24): string {

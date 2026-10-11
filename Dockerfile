@@ -6,8 +6,9 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm build
 
 FROM node:24-alpine AS runtime
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=3001
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=3001 FFMPEG_PATH=/usr/bin/ffmpeg
 WORKDIR /app
+RUN apk add --no-cache ffmpeg
 RUN npm install --global pnpm@9.15.9
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/server/package.json ./apps/server/package.json

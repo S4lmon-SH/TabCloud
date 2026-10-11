@@ -7,7 +7,9 @@ import { join, resolve } from 'node:path';
 import type { VideoOutputSettings, VideoSnapshot } from '../../packages/shared/src/index';
 
 const requireServer = createRequire(resolve('apps/server/package.json'));
-const ffmpeg = requireServer('ffmpeg-static') as string;
+const ffmpeg = process.env.FFMPEG_PATH || requireServer('ffmpeg-static') as string;
+const publicDeployment = Boolean(process.env.E2E_BASE_URL);
+test.describe.configure({ timeout: publicDeployment ? 360_000 : 120_000 });
 
 function fixture(directory: string, name: string, width: number, height: number, fps: string, frames: number) {
   const path = join(directory, name);
@@ -21,7 +23,7 @@ function fixture(directory: string, name: string, width: number, height: number,
 async function setup(page: Page, file: string) {
   await page.goto('/');
   await page.getByRole('button', { name: '방 만들기', exact: true }).click();
-  await expect(page).toHaveURL(/\/video\//);
+  await expect(page).toHaveURL(/\/video\//, { timeout: publicDeployment ? 100_000 : 15_000 });
   await expect(page.getByTestId('video-upload')).toBeEnabled();
   await page.getByTestId('video-upload').setInputFiles(file);
   await expect(page.getByTestId('video-source-status')).toHaveAttribute('data-status', 'ready', { timeout: 30_000 });
@@ -33,7 +35,7 @@ async function render(page: Page) {
   await page.getByRole('button', { name: '처리 시작', exact: true }).click();
   await expect(page.getByTestId('video-status')).toHaveAttribute('data-status', 'rendering');
   await page.getByRole('button', { name: '연산 참여', exact: true }).click();
-  await expect(page.getByTestId('video-status')).toHaveAttribute('data-status', 'completed', { timeout: 90_000 });
+  await expect(page.getByTestId('video-status')).toHaveAttribute('data-status', 'completed', { timeout: publicDeployment ? 180_000 : 90_000 });
   await expect(page.getByRole('button', { name: '영상 다운로드', exact: true })).toBeEnabled();
 }
 

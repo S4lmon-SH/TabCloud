@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import {
-  VIDEO_ALGORITHM, VIDEO_LIMITS, DEFAULT_VIDEO_OUTPUT, videoProcessingSettingsSchema, videoOutputSettingsSchema, resolveVideoOutput,
+  VIDEO_ALGORITHM, VIDEO_LIMITS, DEFAULT_VIDEO_OUTPUT, videoProcessingSettingsSchema, videoOutputSettingsSchema, resolveVideoOutput, getVideoFrameWindow,
   type VideoAssignment, type VideoJobSnapshot, type VideoJoinResult,
   type VideoParticipant, type VideoRoomCreated, type VideoProcessingSettings, type VideoOutputSettings, type VideoSnapshot, type VideoSourceSnapshot,
 } from '@tabcloud/shared';
@@ -237,9 +237,9 @@ export class VideoCoordinator {
       if (this.preparing) fail(503, 'PREPARATION_BUSY', '동영상 준비와 정리가 끝난 뒤 시작해 주세요.');
       const { width, height, fps } = resolveVideoOutput(source.public, output);
       const frames = Math.min(VIDEO_LIMITS.maxFrames, Math.max(1, Math.ceil(source.public.durationSeconds * fps)));
-      // Only one 24-frame source/result window exists on disk. Segment and final MP4
+      // Only one byte-bounded source/result window exists on disk. Segment and final MP4
       // overlap during finalization; thumbnails survive window eviction for previews.
-      const reservedBytes = width * height * VIDEO_LIMITS.frameWindow * 7
+      const reservedBytes = (width * height * 7 + 128) * getVideoFrameWindow(width, height)
         + VIDEO_LIMITS.maxFrames * MAX_VIDEO_THUMBNAIL_BYTES + MAX_VIDEO_OUTPUT_BYTES * 2 + VIDEO_LIMITS.maxFrameBytes;
       const allocatedBytes = this.allocatedBytes();
       if ([...this.allocations].filter((job) => job.public.status !== 'completed').length >= MAX_ALLOCATIONS) fail(503, 'RENDER_CAPACITY', '다른 영상 작업과 정리가 끝난 뒤 다시 시작해 주세요.');
@@ -461,7 +461,7 @@ export class VideoCoordinator {
         const window = await job.pipeline!.readWindow(job.public.windowEnd);
         if (!current()) return;
         if (!Number.isInteger(window.start) || window.start !== job.public.windowEnd || !Number.isInteger(window.end)
-          || window.end < window.start || window.end - window.start > VIDEO_LIMITS.frameWindow || window.end > VIDEO_LIMITS.maxFrames
+          || window.end < window.start || window.end - window.start > getVideoFrameWindow(job.public.width, job.public.height) || window.end > VIDEO_LIMITS.maxFrames
           || window.end === window.start && !window.eof) throw new Error('Invalid video frame window.');
         job.eof = window.eof;
         job.public.windowStart = window.start; job.public.windowEnd = window.end;

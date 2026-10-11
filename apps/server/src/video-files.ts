@@ -7,7 +7,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import ffmpegStatic from 'ffmpeg-static';
 import { PNG } from 'pngjs';
-import { VIDEO_LIMITS, resolveVideoOutput, type VideoOutputSettings, type VideoSourceSnapshot } from '@tabcloud/shared';
+import { VIDEO_LIMITS, getVideoFrameWindow, resolveVideoOutput, type VideoOutputSettings, type VideoSourceSnapshot } from '@tabcloud/shared';
 
 const MIB = 1024 * 1024;
 export const MAX_VIDEO_OUTPUT_BYTES = 512 * MIB;
@@ -133,7 +133,7 @@ export class VideoPipeline {
     const operation = (async () => {
       const timer = setTimeout(() => this.stop(), 120_000);
       try {
-        for (let count = 0; count < VIDEO_LIMITS.frameWindow; count += 1) {
+        for (let count = 0; count < getVideoFrameWindow(this.width, this.height); count += 1) {
           const pixels = await this.readFrame();
           if (!pixels) break;
           await writeFile(join(this.directory, `${frameName(this.nextFrame)}.rgba`), pixels, { flag: 'wx' });
@@ -154,9 +154,10 @@ export class VideoPipeline {
       const remaining = MAX_VIDEO_OUTPUT_BYTES - this.segmentBytes;
       if (remaining <= 1024) invalid('완성 영상이 512 MiB를 넘어요. 화질을 낮춰 다시 시도해 주세요.');
       const encoded = await ffmpeg(['-loglevel', 'error', '-framerate', rationalFps(this.fps), '-start_number', String(start),
-        '-threads', '2', '-i', join(this.directory, '%06d.ppm'), '-frames:v', String(end - start), '-an',
+        '-thread_queue_size', '1', '-threads', '1', '-i', join(this.directory, '%06d.ppm'), '-frames:v', String(end - start), '-an',
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', String({ high: 18, balanced: 20, compact: 24 }[this.output.quality]),
-        '-pix_fmt', 'yuv420p', '-threads', '2', '-filter_threads', '1', '-bf', '0', '-g', String(VIDEO_LIMITS.frameWindow),
+        '-tune', 'zerolatency', '-x264-params', 'rc-lookahead=0:sync-lookahead=0',
+        '-pix_fmt', 'yuv420p', '-threads', '1', '-filter_threads', '1', '-bf', '0', '-g', String(getVideoFrameWindow(this.width, this.height)),
         '-video_track_timescale', '90000', '-fs', String(remaining), '-progress', 'pipe:1', '-movflags', '+faststart', path], this.controller.signal, 180_000).completed;
       const bytes = (await stat(path)).size;
       if (lastProgressFrame(encoded.stdout) !== end - start || bytes >= remaining) invalid('완성 영상이 512 MiB를 넘어요. 화질을 낮춰 다시 시도해 주세요.');

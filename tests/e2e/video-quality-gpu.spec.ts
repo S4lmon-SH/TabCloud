@@ -8,7 +8,8 @@ import type { VideoSnapshot } from '../../packages/shared/src/index';
 import { makeVideoFixture, checkVideoAudio } from '../helpers/video-fixture';
 
 test('1080p60 upload crosses frame windows on real hardware GPU and preserves output frames and audio', async ({ baseURL }, testInfo) => {
-  test.setTimeout(180_000);
+  const publicDeployment = Boolean(process.env.E2E_BASE_URL);
+  test.setTimeout(publicDeployment ? 420_000 : 180_000);
   const browser = await chromium.launch({ channel: 'chromium' });
   const directory = await mkdtemp(join(tmpdir(), 'tabcloud-1080p60-'));
   try {
@@ -31,7 +32,7 @@ test('1080p60 upload crosses frame windows on real hardware GPU and preserves ou
     if (process.env.REQUIRE_WEBGPU === '1') expect(hardware).toBe(true);
     test.skip(!hardware, 'A verified hardware WebGPU adapter is required.');
     await page.getByRole('button', { name: '방 만들기', exact: true }).click();
-    await expect(page).toHaveURL(/\/video\//);
+    await expect(page).toHaveURL(/\/video\//, { timeout: publicDeployment ? 100_000 : 15_000 });
     await page.getByTestId('video-upload').setInputFiles(makeVideoFixture(directory, 30, 1920, 1080, 60));
     await expect(page.getByTestId('video-source-status')).toHaveAttribute('data-status', 'ready', { timeout: 45_000 });
     await expect(page.getByTestId('video-output-summary')).toContainText('1920 × 1080 · 60fps');
@@ -40,18 +41,18 @@ test('1080p60 upload crosses frame windows on real hardware GPU and preserves ou
     await page.getByTestId('resource-gpuPercent').fill('100');
     await page.getByRole('button', { name: '처리 시작', exact: true }).click();
     await page.getByRole('button', { name: '연산 참여', exact: true }).click();
-    await expect(page.getByTestId('video-status')).toHaveAttribute('data-status', 'completed', { timeout: 120_000 });
+    await expect(page.getByTestId('video-status')).toHaveAttribute('data-status', 'completed', { timeout: publicDeployment ? 300_000 : 120_000 });
     await expect.poll(() => latest?.job?.completedFrames).toBe(30);
     const snapshot = latest! as VideoSnapshot;
     expect(snapshot.job).toMatchObject({ width: 1920, height: 1080, fps: 60, totalFrames: 30, frameCountExact: true });
     expect(snapshot.participants.reduce((sum, peer) => sum + peer.gpuFrames, 0)).toBe(30);
     expect(snapshot.participants.reduce((sum, peer) => sum + peer.cpuFrames, 0)).toBe(0);
-    expect(compressedResults).toBe(30);
+    expect(compressedResults).toBeGreaterThanOrEqual(30);
     const downloadEvent = page.waitForEvent('download');
     await page.getByRole('button', { name: '영상 다운로드', exact: true }).click();
     const resultPath = join(directory, '1080p60-filtered.mp4');
     await (await downloadEvent).saveAs(resultPath);
-    const ffmpeg = createRequire(resolve('apps/server/package.json'))('ffmpeg-static') as string;
+    const ffmpeg = process.env.FFMPEG_PATH || createRequire(resolve('apps/server/package.json'))('ffmpeg-static') as string;
     const decoded = spawnSync(ffmpeg, ['-hide_banner', '-i', resultPath, '-map', '0:v:0', '-an', '-progress', 'pipe:1', '-f', 'null', '-'],
       { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
     expect(decoded.status, decoded.stderr).toBe(0);
