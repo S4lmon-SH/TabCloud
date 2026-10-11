@@ -5,6 +5,8 @@
   "buildCommand": "node scripts/validate-web-deployment.mjs && pnpm --filter @tabcloud/web build",
   "outputDirectory": "apps/web/dist",
   "rewrites": [
+    { "source": "/video/:path*", "destination": "/index.html" },
+    { "source": "/animation", "destination": "/index.html" },
     { "source": "/studio/:path*", "destination": "/index.html" },
     { "source": "/room/:path*", "destination": "/index.html" },
     { "source": "/fractal", "destination": "/index.html" }

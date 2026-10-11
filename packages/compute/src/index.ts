@@ -1,5 +1,7 @@
 import { ALGORITHM_VERSION, renderSettingsSchema, type RenderSettings, type TileTask } from '@tabcloud/shared';
 
+export { processVideoPixel, processVideoFrame, processVideoRows, processVideoRowsAsync, assertVideoInput, type VideoRowsOptions } from './video';
+
 export {
   renderAnimationPixel, renderAnimationFrame, renderAnimationFrameAsync, renderAnimationRowsAsync,
   prepareAnimationScene, renderAnimationScenePixel,

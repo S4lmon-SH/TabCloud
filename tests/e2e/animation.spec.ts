@@ -27,7 +27,7 @@ function observe(page: Page) {
 }
 
 async function makeRoom(page: Page) {
-  await page.goto('/');
+  await page.goto('/animation');
   await page.getByRole('button', { name: '방 만들기', exact: true }).click();
   await expect(page).toHaveURL(/\/studio\//);
   await expect(page.getByRole('button', { name: '연산 참여', exact: true })).toBeEnabled();

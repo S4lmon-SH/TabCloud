@@ -17,12 +17,13 @@ export interface ResourceControlsProps {
   plan: ResourcePlan;
   disabled?: boolean;
   stats?: ResourceStats;
+  detailNote?: string;
 }
 
 const mebibytes = (bytes: number) => `${(Math.max(0, bytes) / 1_048_576).toLocaleString('ko-KR', { maximumFractionDigits: 1 })} MiB`;
 const activeTime = (milliseconds: number) => `${(Math.max(0, milliseconds) / 1000).toLocaleString('ko-KR', { maximumFractionDigits: 1 })}초`;
 
-export function ResourceControls({ limits, onChange, device, plan, disabled = false, stats }: ResourceControlsProps) {
+export function ResourceControls({ limits, onChange, device, plan, disabled = false, stats, detailNote }: ResourceControlsProps) {
   const id = useId();
   const controls: { key: keyof ResourceLimits; label: string; caption: string; unavailable?: boolean }[] = [
     { key: 'cpuPercent', label: 'CPU 렌더링 한도', caption: `${device.logicalCores}개 논리 코어 기준` },
@@ -60,7 +61,7 @@ export function ResourceControls({ limits, onChange, device, plan, disabled = fa
           {stats.engine && <div><dt>렌더링 엔진</dt><dd data-testid="resource-engine">{stats.engine}</dd></div>}
         </>}
       </dl>
-      <p>RAM은 렌더링 버퍼 예산이며 최대 512 MiB예요. 브라우저와 드라이버의 전체 메모리는 포함하지 않아요. CPU 0%는 CPU Worker를 끄는 설정이에요. GPU 모드도 제어와 경계 픽셀 보정에는 CPU를 사용해요.</p>
+      <p>{detailNote ?? 'RAM은 렌더링 버퍼 예산이며 최대 512 MiB예요. 브라우저와 드라이버의 전체 메모리는 포함하지 않아요. CPU 0%는 CPU Worker를 끄는 설정이에요. GPU 모드도 제어와 경계 픽셀 보정에는 CPU를 사용해요.'}</p>
     </details>
     <p className="an-resource-footnote">CPU·GPU는 연산 시간 비율, RAM은 추정 용량 기준 예산이에요. 시스템 사용률과 다를 수 있어요.</p>
   </section>;

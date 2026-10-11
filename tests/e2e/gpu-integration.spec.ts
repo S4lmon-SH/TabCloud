@@ -46,7 +46,7 @@ for (const cpuPercent of [0, 25]) {
         if (response.ok() && response.url().endsWith('/state')) latest = await response.json().catch(() => latest) as AnimationSnapshot | null;
         if (response.url().includes('/result?') && response.status() >= 400) errors.push(`frame upload HTTP ${response.status()}`);
       });
-      await page.goto(`${baseURL}/`);
+      await page.goto(`${baseURL}/animation`);
       const gpuAvailable = await page.evaluate(async () => Boolean(await navigator.gpu?.requestAdapter()));
       if (process.env.REQUIRE_WEBGPU === '1') expect(gpuAvailable).toBe(true);
       test.skip(!gpuAvailable, 'A real WebGPU adapter is unavailable in this environment.');

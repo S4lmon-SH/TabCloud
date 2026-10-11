@@ -6,6 +6,8 @@ import { DEFAULT_CONFIG, validateConfig, type ServerConfig } from './config.js';
 import { Coordinator } from './coordinator.js';
 import { registerAnimation } from './animation.js';
 import type { AnimationCoordinator } from './animation-coordinator.js';
+import { registerVideo } from './video.js';
+import type { VideoCoordinator } from './video-coordinator.js';
 
 export type ServerOptions = Partial<ServerConfig> & {
   staticDir?: string;
@@ -13,13 +15,13 @@ export type ServerOptions = Partial<ServerConfig> & {
   now?: () => number;
 };
 
-export type TabCloudServer = FastifyInstance & { coordinator: Coordinator; animation: AnimationCoordinator };
+export type TabCloudServer = FastifyInstance & { coordinator: Coordinator; animation: AnimationCoordinator; video: VideoCoordinator };
 
 export async function buildServer(options: ServerOptions = {}): Promise<TabCloudServer> {
   const { staticDir, logger = false, now = Date.now, ...overrides } = options;
   const config: ServerConfig = { ...DEFAULT_CONFIG, ...overrides };
   validateConfig(config);
-  const app = Fastify({ logger, bodyLimit: 1024, trustProxy: false, requestTimeout: 15_000 });
+  const app = Fastify({ logger, bodyLimit: 1024, trustProxy: false, requestTimeout: 120_000 });
   const coordinator = new Coordinator(config, now);
   app.decorate('coordinator', coordinator);
   const wss = new WebSocketServer({ noServer: true, maxPayload: LIMITS.maxMessageBytes, perMessageDeflate: false });
@@ -101,6 +103,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<TabCloud
   });
 
   app.decorate('animation', await registerAnimation(app, config, now, allowedOrigin));
+  app.decorate('video', await registerVideo(app, config, now, allowedOrigin));
 
   if (staticDir) {
     await app.register(fastifyStatic, { root: staticDir, prefix: '/', index: ['index.html'] });
