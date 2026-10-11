@@ -47,6 +47,20 @@ describe('video resource scheduling', () => {
     expect(planVideoResources(task, { ...limits, ramPercent: 0 }, device).canRender).toBe(false);
     expect(planVideoResources(task, { ...limits, cpuPercent: 0, gpuPercent: 0 }, device).canRender).toBe(false);
   });
+  it('budgets 1080p landscape and portrait frames and reduces CPU copies to fit RAM', () => {
+    for (const dimensions of [{ width: 1920, height: 1080 }, { width: 1080, height: 1920 }]) {
+      const full = planVideoResources(dimensions, { cpuPercent: 100, gpuPercent: 100, ramPercent: 10 }, device);
+      expect(full.canRender).toBe(true); expect(full.frameBytes).toBe(8_294_400);
+      expect(full.cpuWorkers).toBe(8); expect(full.plannedBytes).toBeLessThanOrEqual(full.ramBudgetBytes);
+      const constrained = planVideoResources(dimensions, { cpuPercent: 100, gpuPercent: 100, ramPercent: 1 }, device);
+      expect(constrained.canRender).toBe(true); expect(constrained.gpuEnabled).toBe(true);
+      expect(constrained.cpuWorkers).toBeLessThan(full.cpuWorkers);
+      expect(constrained.plannedBytes).toBeLessThanOrEqual(constrained.ramBudgetBytes);
+      const unknownMemory = planVideoResources(dimensions, limits, { ...device, deviceMemoryGiB: null });
+      expect(unknownMemory.plannedBytes).toBeLessThanOrEqual(unknownMemory.ramBudgetBytes);
+    }
+    expect(() => planVideoResources({ width: 1920, height: 1920 }, limits, device)).toThrow('dimensions');
+  });
   it('never acquires a GPU device at 0% and gives CPU strips an enforced fractional budget', async () => {
     let gpuCalls = 0; const workers: Cpu[] = [];
     const processor = createVideoProcessor({ createGpuProcessor: async () => { gpuCalls += 1; return null; }, createCpuWorker: () => { const cpu = new Cpu(); workers.push(cpu); return cpu; } });

@@ -95,6 +95,11 @@ export async function createVideoGpuProcessor(options: { signal?: AbortSignal } 
       assertVideoInput(input, nextTask);
       const frameBytes = nextTask.width * nextTask.height * 4;
       const stripBytes = nextTask.width * Math.min(VIDEO_GPU_STRIP_ROWS, nextTask.height) * 4;
+      if (Math.max(frameBytes, stripBytes) > device.limits.maxBufferSize
+        || Math.max(frameBytes, stripBytes) > device.limits.maxStorageBufferBindingSize
+        || Math.ceil(nextTask.width / 16) > device.limits.maxComputeWorkgroupsPerDimension) {
+        throw new Error('이 GPU의 영상 버퍼 한도를 넘었어요. 출력 해상도를 낮춰 주세요.');
+      }
       if (!source || source.size !== frameBytes || !output || output.size !== stripBytes) {
         source?.destroy(); output?.destroy(); readback?.destroy();
         source = device.createBuffer({ size: frameBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });

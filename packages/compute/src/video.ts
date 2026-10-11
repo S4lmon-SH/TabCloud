@@ -1,4 +1,4 @@
-import type { VideoFrameTask, VideoProcessingSettings } from '@tabcloud/shared';
+import { isSupportedVideoDimensions, type VideoFrameTask, type VideoProcessingSettings } from '@tabcloud/shared';
 
 type Bytes = Uint8Array | Uint8ClampedArray;
 type Pixel = [number, number, number, number];
@@ -12,8 +12,7 @@ const luma = (r: number, g: number, b: number) => (77 * r + 150 * g + 29 * b + 1
 
 export function assertVideoInput(input: Bytes, task: VideoFrameTask): void {
   const settings = task.settings;
-  if (task.algorithmVersion !== 'video-filter-v1' || !Number.isInteger(task.width) || !Number.isInteger(task.height)
-    || task.width < 1 || task.width > 1280 || task.height < 1 || task.height > 720
+  if (task.algorithmVersion !== 'video-filter-v1' || !isSupportedVideoDimensions(task.width, task.height)
     || !Number.isInteger(task.frameIndex) || task.frameIndex < 0 || input.byteLength !== task.width * task.height * 4
     || !Number.isInteger(settings.denoise) || settings.denoise < 0 || settings.denoise > 100
     || !Number.isInteger(settings.denoiseRadius) || settings.denoiseRadius < 1 || settings.denoiseRadius > 4

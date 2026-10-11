@@ -6,12 +6,12 @@ const requireServer = createRequire(resolve('apps/server/package.json'));
 const ffmpeg = requireServer('ffmpeg-static') as string;
 
 /** Generated test media only. Production processing always starts with a user upload. */
-export function makeVideoFixture(directory: string, frames = 12, width = 160, height = 96): string {
+export function makeVideoFixture(directory: string, frames = 12, width = 160, height = 96, fps = 24): string {
   const path = join(directory, 'uploaded-with-audio.mp4');
   const encoded = spawnSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y',
-    '-f', 'lavfi', '-i', `testsrc2=size=${width}x${height}:rate=24`,
+    '-f', 'lavfi', '-i', `testsrc2=size=${width}x${height}:rate=${fps}`,
     '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
-    '-t', String(frames / 24), '-vf', 'noise=alls=12:allf=t',
+    '-t', String(frames / fps), '-vf', 'noise=alls=12:allf=t',
     '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '96k', '-threads', '2', '-filter_threads', '1', '-movflags', '+faststart', path],
   { windowsHide: true, encoding: 'utf8', timeout: 30_000 });

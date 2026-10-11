@@ -21,7 +21,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<TabCloud
   const { staticDir, logger = false, now = Date.now, ...overrides } = options;
   const config: ServerConfig = { ...DEFAULT_CONFIG, ...overrides };
   validateConfig(config);
-  const app = Fastify({ logger, bodyLimit: 1024, trustProxy: false, requestTimeout: 120_000 });
+  const app = Fastify({ logger, bodyLimit: 1024, trustProxy: false, requestTimeout: 600_000 });
   const coordinator = new Coordinator(config, now);
   app.decorate('coordinator', coordinator);
   const wss = new WebSocketServer({ noServer: true, maxPayload: LIMITS.maxMessageBytes, perMessageDeflate: false });

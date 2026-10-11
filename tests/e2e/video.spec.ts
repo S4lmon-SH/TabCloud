@@ -2,6 +2,7 @@ import { chromium, expect, test, type BrowserContext, type Page } from '@playwri
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import type { VideoAssignment, VideoSnapshot } from '../../packages/shared/src/index';
 import { processVideoFrame } from '../../packages/compute/src/index';
 import { makeVideoFixture, checkVideoAudio } from '../helpers/video-fixture';
@@ -28,7 +29,10 @@ async function observe(page: Page) {
   page.on('request', (request) => {
     if (request.method() === 'PUT' && request.url().includes('/result?')) {
       const bytes = request.postDataBuffer();
-      if (bytes) state.outputs.set(new URL(request.url()).searchParams.get('taskId')!, bytes);
+      if (bytes) {
+        const query = new URL(request.url()).searchParams;
+        state.outputs.set(query.get('taskId')!, query.get('encoding') === 'gzip' ? gunzipSync(bytes) : bytes);
+      }
     }
   });
   page.on('response', (response) => {

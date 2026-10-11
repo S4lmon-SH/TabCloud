@@ -1,5 +1,5 @@
 import { assertVideoInput } from '@tabcloud/compute';
-import type { VideoFrameTask } from '@tabcloud/shared';
+import { isSupportedVideoDimensions, type VideoFrameTask } from '@tabcloud/shared';
 import { detectDeviceResources, MAX_RENDER_MEMORY_BYTES, normalizeResourceLimits, UNKNOWN_DEVICE_MEMORY_BYTES,
   type DeviceResources, type ResourceLimits, type ResourcePlan } from './resource-budget';
 import { createVideoGpuProcessor, VIDEO_GPU_STRIP_ROWS, type VideoGpuProcessor } from './video-gpu';
@@ -7,8 +7,7 @@ import type { VideoCpuRequest, VideoCpuResponse } from './video-cpu.worker';
 
 export interface VideoResourcePlan extends ResourcePlan { inputBytes: number; cpuStripRows: number; gpuStripRows: number }
 export function planVideoResources(dimensions: { width: number; height: number }, input: ResourceLimits, hints: DeviceResources): VideoResourcePlan {
-  if (!Number.isInteger(dimensions.width) || !Number.isInteger(dimensions.height) || dimensions.width < 1 || dimensions.width > 1280
-    || dimensions.height < 1 || dimensions.height > 720) throw new RangeError('Unsupported video dimensions.');
+  if (!isSupportedVideoDimensions(dimensions.width, dimensions.height)) throw new RangeError('Unsupported video dimensions.');
   const limits = normalizeResourceLimits(input);
   const device = detectDeviceResources({ hardwareConcurrency: hints.logicalCores, deviceMemory: hints.deviceMemoryGiB ?? undefined });
   const frameBytes = dimensions.width * dimensions.height * 4;

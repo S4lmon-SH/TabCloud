@@ -31,6 +31,12 @@
 .vd-filter-fields label > span { font-size: 12px; color: #6b7684; display: flex; justify-content: space-between; }
 .vd-filter-fields output { color: #333d4b; font-weight: 700; font-variant-numeric: tabular-nums; }
 .vd-filter-fields input { width: 100%; margin: 0; accent-color: #3182f6; cursor: pointer; }
+.vd-output-fields { display: grid; gap: 15px; margin-top: 21px; }
+.vd-output-fields label { display: grid; gap: 8px; }
+.vd-output-fields label > span { color: #6b7684; font-size: 12px; }
+.vd-output-fields select { width: 100%; min-width: 0; padding: 11px 12px; font-size: 12px; background: #f7f9fc; border-color: #edf0f4; cursor: pointer; }
+.vd-output-summary { margin: 19px 0 0; font-size: 13px; color: #3182f6; font-weight: 700; line-height: 1.7; }
+.vd-output-summary span { display: block; margin-top: 2px; color: #8b95a1; font-size: 10px; font-weight: 400; }
 .vd-radius { display: flex; gap: 15px; align-items: center; font-size: 11px; color: #8b95a1; margin: 16px 0; }
 .vd-radius input { width: 70px; padding: 8px 10px; }
 .vd-gpu-status { display: grid; gap: 8px; padding: 16px; background: #f5f6f8; border-radius: 12px; margin: 18px 0 3px; }

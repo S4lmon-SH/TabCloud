@@ -24,6 +24,8 @@ export async function checkVideoGpu() {
     { width: 17, height: 9, settings: { denoise: 100, denoiseRadius: 4, sharpen: 100, brightness: 50, contrast: 150, saturation: 200 } },
     { width: 1280, height: 720, settings: { ...DEFAULT_VIDEO_PROCESSING } },
     { width: 1280, height: 720, settings: { denoise: 100, denoiseRadius: 4, sharpen: 100, brightness: -17, contrast: 137, saturation: 173 } },
+    { width: 1920, height: 1080, settings: { ...DEFAULT_VIDEO_PROCESSING } },
+    { width: 1080, height: 1920, settings: { denoise: 100, denoiseRadius: 4, sharpen: 100, brightness: 13, contrast: 121, saturation: 147 } },
   ];
   const measurements: { width: number; height: number; settings: VideoProcessingSettings; frameIndex: number;
     maxDifference: number; processedBytes: number; dispatches: number; busyMs: number; timestampMs: number | null; allocatedBytes: number }[] = [];

@@ -1,22 +1,22 @@
 import { randomBytes, randomInt } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ChildProcess } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import {
-  VIDEO_ALGORITHM, VIDEO_LIMITS, videoProcessingSettingsSchema,
+  VIDEO_ALGORITHM, VIDEO_LIMITS, DEFAULT_VIDEO_OUTPUT, videoProcessingSettingsSchema, videoOutputSettingsSchema, resolveVideoOutput,
   type VideoAssignment, type VideoJobSnapshot, type VideoJoinResult,
-  type VideoParticipant, type VideoRoomCreated, type VideoProcessingSettings, type VideoSnapshot, type VideoSourceSnapshot,
+  type VideoParticipant, type VideoRoomCreated, type VideoProcessingSettings, type VideoOutputSettings, type VideoSnapshot, type VideoSourceSnapshot,
 } from '@tabcloud/shared';
 import { processVideoPixel } from '@tabcloud/compute';
 import type { ServerConfig } from './config.js';
-import { MAX_VIDEO_OUTPUT_BYTES, VideoFiles, VideoFileError } from './video-files.js';
+import { MAX_VIDEO_OUTPUT_BYTES, MAX_VIDEO_THUMBNAIL_BYTES, VideoFiles, VideoFileError, type VideoPipeline } from './video-files.js';
 
 const id = () => randomBytes(16).toString('base64url');
 const token = () => randomBytes(32).toString('base64url');
-const MAX_ALLOCATIONS = 2;
+const MAX_ALLOCATIONS = 1;
 const MAX_DISK_BYTES = 4.5 * 1024 ** 3;
-const JOB_DEADLINE_MS = 30 * 60 * 1000;
+const JOB_DEADLINE_MS = 3 * 60 * 60 * 1000;
+const ROOM_TTL_MS = 4 * 60 * 60 * 1000;
 
 export class VideoError extends Error {
   constructor(readonly statusCode: number, readonly code: string, message: string) { super(message); }
@@ -32,7 +32,8 @@ interface Frame {
 }
 interface Job {
   public: VideoJobSnapshot; source: Source; directory: string; frames: Frame[]; reservedBytes: number;
-  uploads: Set<Promise<void>>; encoder: ChildProcess | null; encoding: Promise<void> | null;
+  uploads: Set<Promise<void>>; controller: AbortController; pipeline: VideoPipeline | null; work: Promise<void> | null;
+  eof: boolean; encodeMs: number;
   cleanup: Promise<void> | null;
 }
 interface Source {
@@ -63,7 +64,7 @@ export class VideoCoordinator {
   createRoom(): VideoRoomCreated {
     this.sweep();
     if (this.closed || this.rooms.size >= this.config.maxRooms) fail(503, 'ROOM_LIMIT', '잠시 후 새 작업실을 만들어 주세요.');
-    const room: Room = { id: id(), inviteToken: token(), hostToken: token(), expiresAt: this.now() + this.config.roomTtlMs,
+    const room: Room = { id: id(), inviteToken: token(), hostToken: token(), expiresAt: this.now() + Math.max(this.config.roomTtlMs, ROOM_TTL_MS),
       lastActiveAt: this.now(), participants: new Map(), job: null, starting: false, revision: 0, generation: 0, source: null, pendingSource: null };
     this.rooms.set(room.id, room);
     return { roomId: room.id, inviteToken: room.inviteToken, hostToken: room.hostToken, expiresAt: room.expiresAt };
@@ -116,11 +117,13 @@ export class VideoCoordinator {
   }
 
   snapshot({ room, participant }: VideoAuth): VideoSnapshot {
+    const recentFrames = room.job?.public.frames.slice(-120) ?? [];
     return {
       id: room.id, revision: ++room.revision, expiresAt: room.expiresAt, hostConnected: [...room.participants.values()].some((p) => p.connected && p.role === 'host'),
       selfId: participant.id, role: participant.role,
       participants: [...room.participants.values()].map(({ token: _token, lastSeen: _lastSeen, revoked: _revoked, activeAttempt: _activeAttempt, ...visible }) => ({ ...visible })),
-      job: room.job ? { ...room.job.public, settings: { ...room.job.public.settings }, frames: [...room.job.public.frames], frameOwners: { ...room.job.public.frameOwners } } : null,
+      job: room.job ? { ...room.job.public, settings: { ...room.job.public.settings }, output: { ...room.job.public.output }, frames: recentFrames,
+        frameOwners: Object.fromEntries(recentFrames.map((index) => [String(index), room.job!.public.frameOwners[String(index)]!])) } : null,
       source: room.pendingSource || room.source ? { ...(room.pendingSource ?? room.source)!.public } : null,
     };
   }
@@ -140,9 +143,12 @@ export class VideoCoordinator {
   async beginUpload(auth: VideoAuth, declaredBytes?: number): Promise<SourceUpload> {
     this.requireHost(auth);
     const room = auth.room;
-    if (declaredBytes !== undefined && (!Number.isSafeInteger(declaredBytes) || declaredBytes < 1 || declaredBytes > VIDEO_LIMITS.maxUploadBytes)) fail(413, 'VIDEO_TOO_LARGE', '64 MiB 이하 동영상을 선택해 주세요.');
+    if (declaredBytes !== undefined && (!Number.isSafeInteger(declaredBytes) || declaredBytes < 1 || declaredBytes > VIDEO_LIMITS.maxUploadBytes)) fail(413, 'VIDEO_TOO_LARGE', '256 MiB 이하 동영상을 선택해 주세요.');
     if (room.starting || room.pendingSource || room.job && ['rendering', 'encoding'].includes(room.job.public.status)) fail(409, 'JOB_ACTIVE', '현재 작업을 마친 뒤 업로드해 주세요.');
-    if (this.preparing) fail(503, 'PREPARATION_BUSY', '다른 동영상 준비가 끝난 뒤 다시 업로드해 주세요.');
+    if (this.preparing || [...this.rooms.values()].some((entry) => entry.starting)
+      || [...this.allocations].some((job) => job.public.status !== 'completed')) {
+      fail(503, 'PREPARATION_BUSY', '다른 영상 작업과 정리가 끝난 뒤 다시 업로드해 주세요.');
+    }
     if (this.allocatedBytes() + VIDEO_LIMITS.maxUploadBytes > MAX_DISK_BYTES) fail(503, 'STORAGE_CAPACITY', '동영상 보관 공간이 부족해요.');
     let resolveReceiving!: () => void;
     const source: Source = { public: { id: id(), status: 'preparing', width: 0, height: 0, frames: 0, fps: 24, durationSeconds: 0, sourceBytes: 0, hasAudio: false, failureReason: null },
@@ -180,7 +186,9 @@ export class VideoCoordinator {
           if (priorJob) await this.cleanup(priorJob);
           if (priorSource) await this.cleanupSource(priorSource);
         } catch (error) { this.sourceFailed(room, source, error); }
-        finally { if (this.preparing === source) this.preparing = null; }
+        // Failed/cancelled preparation keeps the global slot until cleanupSource
+        // has closed its processes and removed its files; sourceFailed releases it.
+        finally { if (this.preparing === source && source.public.status === 'ready') this.preparing = null; }
       })();
       return this.snapshot(auth);
     } catch (error) {
@@ -211,30 +219,38 @@ export class VideoCoordinator {
     void pending.finally(() => { this.cleanups.delete(pending); if (this.preparing === source) this.preparing = null; }).catch(() => {});
   }
 
-  async start(auth: VideoAuth, input: VideoProcessingSettings): Promise<VideoSnapshot> {
+  async start(auth: VideoAuth, input: VideoProcessingSettings, requestedOutput: VideoOutputSettings = DEFAULT_VIDEO_OUTPUT): Promise<VideoSnapshot> {
     this.requireHost(auth);
     const settings = videoProcessingSettingsSchema.parse(input);
+    const output = videoOutputSettingsSchema.parse(requestedOutput);
     const room = auth.room;
     if (room.starting || room.pendingSource || room.job?.public.status === 'rendering' || room.job?.public.status === 'encoding') fail(409, 'JOB_ACTIVE', '현재 작업을 마친 뒤 시작해 주세요.');
     const source = room.source;
     if (!source || source.public.status !== 'ready') fail(409, 'SOURCE_REQUIRED', '동영상을 먼저 업로드해 주세요.');
+    if (this.preparing) fail(503, 'PREPARATION_BUSY', '동영상 준비와 정리가 끝난 뒤 시작해 주세요.');
     const generation = room.generation;
     room.starting = true;
     try {
       if (room.job) { await this.cleanup(room.job); room.job = null; }
       if (this.closed || this.rooms.get(room.id) !== room) fail(404, 'ROOM_NOT_FOUND', '작업실이 만료됐어요.');
       if (generation !== room.generation) fail(409, 'JOB_CANCELLED', '작업 시작이 취소됐어요.');
-      const { width, height, frames } = source.public;
-      const reservedBytes = width * height * frames * 3 + frames * 128 + MAX_VIDEO_OUTPUT_BYTES + VIDEO_LIMITS.maxFrameBytes;
+      if (this.preparing) fail(503, 'PREPARATION_BUSY', '동영상 준비와 정리가 끝난 뒤 시작해 주세요.');
+      const { width, height, fps } = resolveVideoOutput(source.public, output);
+      const frames = Math.min(VIDEO_LIMITS.maxFrames, Math.max(1, Math.ceil(source.public.durationSeconds * fps)));
+      // Only one 24-frame source/result window exists on disk. Segment and final MP4
+      // overlap during finalization; thumbnails survive window eviction for previews.
+      const reservedBytes = width * height * VIDEO_LIMITS.frameWindow * 7
+        + VIDEO_LIMITS.maxFrames * MAX_VIDEO_THUMBNAIL_BYTES + MAX_VIDEO_OUTPUT_BYTES * 2 + VIDEO_LIMITS.maxFrameBytes;
       const allocatedBytes = this.allocatedBytes();
-      if ([...this.allocations].filter((job) => ['rendering', 'encoding'].includes(job.public.status)).length >= MAX_ALLOCATIONS) fail(503, 'RENDER_CAPACITY', '다른 영상 작업이 끝난 뒤 다시 시작해 주세요.');
+      if ([...this.allocations].filter((job) => job.public.status !== 'completed').length >= MAX_ALLOCATIONS) fail(503, 'RENDER_CAPACITY', '다른 영상 작업과 정리가 끝난 뒤 다시 시작해 주세요.');
       if (allocatedBytes + reservedBytes > MAX_DISK_BYTES) fail(503, 'STORAGE_CAPACITY', '영상 보관 공간이 가득 찼어요. 이전 작업실이 만료된 뒤 다시 시도해 주세요.');
       const jobId = id();
       const job: Job = {
-        public: { id: jobId, sourceId: source.public.id, width, height, fps: 24, status: 'rendering', settings, totalFrames: frames, completedFrames: 0, frames: [], frameOwners: {}, retries: 0,
+        public: { id: jobId, sourceId: source.public.id, width, height, fps, status: 'rendering', settings, output,
+          phase: 'decoding', windowStart: 0, windowEnd: 0, frameCountExact: false,
+          totalFrames: frames, completedFrames: 0, frames: [], frameOwners: {}, retries: 0,
           startedAt: this.now(), finishedAt: null, renderMs: null, encodeMs: null, wallMs: null, computeMs: 0, resultBytes: 0, videoBytes: 0, failureReason: null },
-        source, directory: '', reservedBytes, frames: Array.from({ length: frames }, (_, index) => ({ index, owner: null, attemptId: null, startedAt: 0, expiresAt: 0, rows: 0, attempts: 0, done: false, uploading: false })),
-        uploads: new Set(), encoder: null, encoding: null, cleanup: null,
+        source, directory: '', reservedBytes, frames: [], uploads: new Set(), controller: new AbortController(), pipeline: null, work: null, eof: false, encodeMs: 0, cleanup: null,
       };
       this.allocations.add(job);
       try { job.directory = await this.files.createDirectory(`job-${jobId}`); }
@@ -243,6 +259,12 @@ export class VideoCoordinator {
       if (generation !== room.generation) { await this.cleanup(job); fail(409, 'JOB_CANCELLED', '작업 시작이 취소됐어요.'); }
       room.job = job;
       for (const p of room.participants.values()) { p.completedFrames = 0; p.computeMs = 0; p.activeFrame = null; p.activeAttempt = null; p.cpuFrames = 0; p.gpuFrames = 0; }
+      try {
+        job.pipeline = this.files.startPipeline(job.directory, source.directory, source.public, output, job.controller.signal);
+        this.advanceWindow(room, job, false);
+      } catch (error) {
+        this.finish(room, 'failed', error instanceof VideoFileError ? error.message : '동영상 처리를 시작하지 못했어요. 다시 시작해 주세요.');
+      }
       return this.snapshot(auth);
     } finally { room.starting = false; }
   }
@@ -258,7 +280,7 @@ export class VideoCoordinator {
   task(auth: VideoAuth): VideoAssignment | null {
     if (!auth.participant.consented) fail(403, 'CONSENT_REQUIRED', '기기 자원 사용에 동의한 뒤 참여해 주세요.');
     const job = auth.room.job;
-    if (!job || job.public.status !== 'rendering') return null;
+    if (!job || job.public.status !== 'rendering' || job.public.phase !== 'processing') return null;
     const existing = job.frames.find((frame) => frame.owner === auth.participant.id && frame.attemptId === auth.participant.activeAttempt && !frame.done);
     if (existing) {
       if (existing.expiresAt <= this.now() || this.now() - existing.startedAt >= this.config.animationMaxAttemptMs) this.release(auth.room, existing);
@@ -288,14 +310,19 @@ export class VideoCoordinator {
     const { job, frame } = this.active(auth, attempt);
     if (!Number.isInteger(rows) || rows < 0 || rows > job.public.height) fail(400, 'INVALID_PROGRESS', '진행 정보가 올바르지 않아요.');
     // HTTP progress reports can arrive out of order; old rows never renew a lease.
-    if (rows > frame.rows) { frame.rows = rows; frame.expiresAt = Math.min(this.now() + this.config.leaseMs, frame.startedAt + this.config.animationMaxAttemptMs); }
+    if (rows > frame.rows) {
+      frame.rows = rows;
+      // A late progress request must not shorten a lease already extended for a transfer.
+      frame.expiresAt = Math.min(Math.max(frame.expiresAt, this.now() + this.config.leaseMs), frame.startedAt + this.config.animationMaxAttemptMs);
+    }
   }
 
   reserveUpload(auth: VideoAuth, attempt: Attempt): UploadReservation {
     const { job, frame } = this.active(auth, attempt);
     if (frame.uploading) fail(409, 'UPLOAD_IN_PROGRESS', '이미 전송 중인 프레임이에요.');
-    if (this.uploading >= 4) fail(429, 'UPLOAD_BUSY', '잠시 후 프레임을 다시 전송해 주세요.');
+    if (this.uploading >= 2) fail(429, 'UPLOAD_BUSY', '잠시 후 프레임을 다시 전송해 주세요.');
     frame.uploading = true; this.uploading += 1;
+    frame.expiresAt = Math.min(this.now() + 90_000, frame.startedAt + this.config.animationMaxAttemptMs);
     let resolve!: () => void;
     const pending = new Promise<void>((done) => { resolve = done; });
     job.uploads.add(pending);
@@ -306,6 +333,21 @@ export class VideoCoordinator {
     } };
   }
 
+  reserveSourceRead(auth: VideoAuth, attempt: Attempt): { finish: () => void } {
+    const { job, frame } = this.active(auth, attempt);
+    if (this.uploading >= 2) fail(429, 'TRANSFER_BUSY', '잠시 후 프레임을 다시 가져와 주세요.');
+    this.uploading += 1;
+    frame.expiresAt = Math.min(this.now() + 60_000, frame.startedAt + this.config.animationMaxAttemptMs);
+    let resolve!: () => void;
+    const pending = new Promise<void>((done) => { resolve = done; });
+    job.uploads.add(pending);
+    let done = false;
+    return { finish: () => {
+      if (done) return;
+      done = true; this.uploading -= 1; job.uploads.delete(pending); resolve();
+    } };
+  }
+
   async result(reservation: UploadReservation, attempt: Attempt, pixels: Buffer, computeMs: number, engine: 'cpu' | 'gpu' | 'mixed' = 'cpu'): Promise<void> {
     const { auth, job, frame } = reservation;
     this.active(auth, attempt);
@@ -313,7 +355,7 @@ export class VideoCoordinator {
     if (pixels.length !== width * height * 4 || !Number.isFinite(computeMs) || computeMs < 0 || computeMs > this.config.animationMaxAttemptMs) {
       this.release(auth.room, frame); fail(400, 'INVALID_RESULT', '프레임 크기 또는 계산 시간이 올바르지 않아요.');
     }
-    const input = await this.files.sourceFrame(job.source.directory, frame.index, width, height);
+    const input = await this.files.sourceFrame(job.directory, frame.index, width, height);
     this.active(auth, attempt);
     const task = this.assignment(job, frame).task;
     for (let sample = 0; sample < 8; sample += 1) {
@@ -338,7 +380,7 @@ export class VideoCoordinator {
       job.public.completedFrames += 1; job.public.frames.push(frame.index); job.public.frames.sort((a, b) => a - b);
       job.public.frameOwners[String(frame.index)] = auth.participant.id;
       job.public.computeMs += computeMs; job.public.resultBytes += pixels.length;
-      if (job.public.completedFrames === job.public.totalFrames) this.beginEncoding(auth.room, job);
+      if (job.frames.every((entry) => entry.done)) this.advanceWindow(auth.room, job, true);
     } finally { await prepared.discard(); }
   }
 
@@ -378,36 +420,73 @@ export class VideoCoordinator {
     this.scheduleCleanup(job);
   }
 
-  private beginEncoding(room: Room, job: Job): void {
-    job.public.status = 'encoding'; job.public.renderMs = this.now() - job.public.startedAt;
-    const encodingStarted = this.now();
-    this.clearConsent(room);
-    job.encoding = (async () => {
+  private advanceWindow(room: Room, job: Job, encodePrevious: boolean): void {
+    if (job.work || job.public.status !== 'rendering') return;
+    job.public.phase = encodePrevious ? 'encoding-segment' : 'decoding';
+    const current = () => room.job === job && !job.controller.signal.aborted && !this.closed
+      && ['rendering', 'encoding'].includes(job.public.status);
+    const finalize = async () => {
+      job.public.totalFrames = job.public.completedFrames;
+      job.public.frameCountExact = true;
+      if (!job.public.totalFrames) throw new VideoFileError(422, 'INVALID_VIDEO', '처리할 영상 프레임이 없어요.');
+      job.public.status = 'encoding'; job.public.phase = 'finalizing';
+      job.public.renderMs = this.now() - job.public.startedAt - job.encodeMs;
+      this.clearConsent(room);
+      const started = this.now();
+      await job.pipeline!.finalize(job.public.totalFrames);
+      if (!current()) return;
+      const bytes = (await stat(join(job.directory, 'video.mp4'))).size;
+      if (!current()) return;
+      await job.pipeline!.close();
+      if (!current()) return;
+      // Finalization removed source/result windows and intermediate segments. Keep
+      // capacity only for the retained MP4, bounded thumbnails and file overhead.
+      job.reservedBytes = bytes + job.public.totalFrames * MAX_VIDEO_THUMBNAIL_BYTES + 65_536;
+      job.encodeMs += this.now() - started;
+      job.public.videoBytes = bytes; job.public.status = 'completed'; job.public.finishedAt = this.now();
+      job.public.encodeMs = job.encodeMs; job.public.wallMs = this.now() - job.public.startedAt;
+    };
+    job.work = (async () => {
       try {
-        const encoder = this.files.encode(job.directory, job.source.directory, job.public.totalFrames, job.source.public.hasAudio);
-        job.encoder = encoder.process;
-        await encoder.completed;
-        if (room.job !== job || job.public.status !== 'encoding') return;
-        job.public.videoBytes = (await stat(join(job.directory, 'video.mp4'))).size;
-        if (room.job !== job || job.public.status !== 'encoding') return;
-        job.public.status = 'completed'; job.public.finishedAt = this.now();
-        job.public.encodeMs = this.now() - encodingStarted; job.public.wallMs = this.now() - job.public.startedAt;
-      } catch {
-        if (room.job === job && job.public.status === 'encoding') this.finish(room, 'failed', '영상을 저장하지 못했어요. 서버의 FFmpeg 설정을 확인해 주세요.');
-      } finally { job.encoder = null; }
+        if (encodePrevious) {
+          await Promise.all([...job.uploads]);
+          if (!current()) return;
+          const started = this.now();
+          await job.pipeline!.encodeWindow(job.public.windowStart, job.public.windowEnd);
+          if (!current()) return;
+          job.encodeMs += this.now() - started;
+          if (job.eof) { await finalize(); return; }
+        }
+        job.public.phase = 'decoding';
+        const window = await job.pipeline!.readWindow(job.public.windowEnd);
+        if (!current()) return;
+        if (!Number.isInteger(window.start) || window.start !== job.public.windowEnd || !Number.isInteger(window.end)
+          || window.end < window.start || window.end - window.start > VIDEO_LIMITS.frameWindow || window.end > VIDEO_LIMITS.maxFrames
+          || window.end === window.start && !window.eof) throw new Error('Invalid video frame window.');
+        job.eof = window.eof;
+        job.public.windowStart = window.start; job.public.windowEnd = window.end;
+        job.public.frameCountExact = window.eof;
+        job.public.totalFrames = window.eof ? window.end : Math.max(job.public.totalFrames, window.end);
+        job.frames = Array.from({ length: window.end - window.start }, (_, offset) => ({ index: window.start + offset,
+          owner: null, attemptId: null, startedAt: 0, expiresAt: 0, rows: 0, attempts: 0, done: false, uploading: false }));
+        if (!job.frames.length) { await finalize(); return; }
+        job.public.phase = 'processing';
+      } catch (error) {
+        if (current()) this.finish(room, 'failed', error instanceof VideoFileError ? error.message : '영상을 준비하거나 저장하지 못했어요. 다시 시작해 주세요.');
+      } finally { job.work = null; }
     })();
   }
 
   preview(auth: VideoAuth, jobId: string, frameIndex: number) {
     const job = auth.room.job;
-    if (!job || job.public.id !== jobId || !Number.isInteger(frameIndex) || !job.frames[frameIndex]?.done || !['rendering', 'encoding', 'completed'].includes(job.public.status)) fail(404, 'FRAME_NOT_FOUND', '아직 완성되지 않은 프레임이에요.');
+    if (!job || job.public.id !== jobId || !Number.isInteger(frameIndex) || !job.public.frames.includes(frameIndex) || !['rendering', 'encoding', 'completed'].includes(job.public.status)) fail(404, 'FRAME_NOT_FOUND', '아직 완성되지 않은 프레임이에요.');
     return this.files.preview(job.directory, frameIndex, job.public.width, job.public.height);
   }
 
   async sourceFrame(auth: VideoAuth, attempt: Attempt, frameIndex: number): Promise<Buffer> {
     const { job, frame } = this.active(auth, attempt);
     if (frame.index !== frameIndex) fail(409, 'STALE_ATTEMPT', '배정된 프레임만 가져올 수 있어요.');
-    const input = await this.files.sourceFrame(job.source.directory, frameIndex, job.public.width, job.public.height);
+    const input = await this.files.sourceFrame(job.directory, frameIndex, job.public.width, job.public.height);
     this.active(auth, attempt);
     return input;
   }
@@ -416,8 +495,7 @@ export class VideoCoordinator {
     this.requireHost(auth);
     const source = auth.room.source;
     if (!source || source.public.id !== sourceId || source.public.status !== 'ready') fail(404, 'SOURCE_NOT_READY', '아직 원본 준비가 끝나지 않았어요.');
-    const input = await this.files.sourceFrame(source.directory, 0, source.public.width, source.public.height);
-    return this.files.thumbnail(input, source.public.width, source.public.height);
+    return this.files.sourcePreview(source.directory);
   }
 
   video(auth: VideoAuth, jobId: string) {
@@ -440,7 +518,7 @@ export class VideoCoordinator {
       }
       const job = room.job;
       if (!job || !['rendering', 'encoding'].includes(job.public.status)) continue;
-      if (this.now() - job.public.startedAt >= JOB_DEADLINE_MS) { this.finish(room, 'failed', '작업 시간이 30분을 넘었어요. 더 가벼운 설정으로 다시 시작해 주세요.'); continue; }
+      if (this.now() - job.public.startedAt >= JOB_DEADLINE_MS) { this.finish(room, 'failed', '작업 시간이 3시간을 넘었어요. 더 가벼운 설정으로 다시 시작해 주세요.'); continue; }
       for (const frame of job.frames) if (frame.owner && (frame.expiresAt <= this.now() || this.now() - frame.startedAt >= this.config.animationMaxAttemptMs)) this.release(room, frame);
     }
   }
@@ -453,9 +531,10 @@ export class VideoCoordinator {
 
   private cleanup(job: Job): Promise<void> {
     if (!job.cleanup) job.cleanup = (async () => {
-      job.encoder?.kill();
+      job.controller.abort(); job.pipeline?.stop();
       await Promise.all([...job.uploads]);
-      if (job.encoding) await job.encoding;
+      if (job.work) await job.work;
+      if (job.pipeline) await job.pipeline.close();
       if (job.directory) await this.files.removeDirectory(job.directory);
       this.allocations.delete(job);
     })();

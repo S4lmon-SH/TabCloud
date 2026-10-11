@@ -1,0 +1,203 @@
+{
+  "date": "2026-10-11",
+  "scope": "1080p60 and longer uploaded videos",
+  "unitTests": 311,
+  "testFiles": 18,
+  "fullLocalE2E": 25,
+  "finalUploadE2E": 10,
+  "hardwareRequired": true,
+  "hardwareParity": {
+    "available": true,
+    "adapterName": "nvidia · ampere",
+    "hardware": true,
+    "timestampSupported": true,
+    "deviceCreations": 1,
+    "measurements": [
+      {
+        "width": 2,
+        "height": 2,
+        "settings": {
+          "denoise": 100,
+          "denoiseRadius": 4,
+          "sharpen": 100,
+          "brightness": -50,
+          "contrast": 50,
+          "saturation": 0
+        },
+        "frameIndex": 0,
+        "maxDifference": 0,
+        "processedBytes": 16,
+        "dispatches": 1,
+        "busyMs": 11.5,
+        "timestampMs": 0,
+        "allocatedBytes": 128
+      },
+      {
+        "width": 17,
+        "height": 9,
+        "settings": {
+          "denoise": 0,
+          "denoiseRadius": 1,
+          "sharpen": 0,
+          "brightness": 0,
+          "contrast": 100,
+          "saturation": 100
+        },
+        "frameIndex": 1,
+        "maxDifference": 0,
+        "processedBytes": 612,
+        "dispatches": 1,
+        "busyMs": 3.2000000001862645,
+        "timestampMs": 0,
+        "allocatedBytes": 1916
+      },
+      {
+        "width": 17,
+        "height": 9,
+        "settings": {
+          "denoise": 100,
+          "denoiseRadius": 4,
+          "sharpen": 100,
+          "brightness": 50,
+          "contrast": 150,
+          "saturation": 200
+        },
+        "frameIndex": 2,
+        "maxDifference": 0,
+        "processedBytes": 612,
+        "dispatches": 1,
+        "busyMs": 2.7999999998137355,
+        "timestampMs": 0,
+        "allocatedBytes": 1916
+      },
+      {
+        "width": 1280,
+        "height": 720,
+        "settings": {
+          "denoise": 60,
+          "denoiseRadius": 3,
+          "sharpen": 25,
+          "brightness": 0,
+          "contrast": 105,
+          "saturation": 105
+        },
+        "frameIndex": 3,
+        "maxDifference": 0,
+        "processedBytes": 3686400,
+        "dispatches": 12,
+        "busyMs": 42.30000000167638,
+        "timestampMs": 0.524288,
+        "allocatedBytes": 4341840
+      },
+      {
+        "width": 1280,
+        "height": 720,
+        "settings": {
+          "denoise": 100,
+          "denoiseRadius": 4,
+          "sharpen": 100,
+          "brightness": -17,
+          "contrast": 137,
+          "saturation": 173
+        },
+        "frameIndex": 4,
+        "maxDifference": 0,
+        "processedBytes": 3686400,
+        "dispatches": 12,
+        "busyMs": 46.70000000111759,
+        "timestampMs": 0.7208960000000001,
+        "allocatedBytes": 4341840
+      },
+      {
+        "width": 1920,
+        "height": 1080,
+        "settings": {
+          "denoise": 60,
+          "denoiseRadius": 3,
+          "sharpen": 25,
+          "brightness": 0,
+          "contrast": 105,
+          "saturation": 105
+        },
+        "frameIndex": 5,
+        "maxDifference": 0,
+        "processedBytes": 8294400,
+        "dispatches": 17,
+        "busyMs": 58.29999999795109,
+        "timestampMs": 4.980736000000001,
+        "allocatedBytes": 9277520
+      },
+      {
+        "width": 1080,
+        "height": 1920,
+        "settings": {
+          "denoise": 100,
+          "denoiseRadius": 4,
+          "sharpen": 100,
+          "brightness": 13,
+          "contrast": 121,
+          "saturation": 147
+        },
+        "frameIndex": 6,
+        "maxDifference": 0,
+        "processedBytes": 8294400,
+        "dispatches": 30,
+        "busyMs": 125.20000000065193,
+        "timestampMs": 18.415616,
+        "allocatedBytes": 8847440
+      }
+    ],
+    "abortName": "AbortError",
+    "lostAfterAbort": true
+  },
+  "fullHdProcessing": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 60,
+    "frames": 30,
+    "hardware": true,
+    "compressedResults": 30,
+    "audio": {
+      "nonSilent": true,
+      "samples": 24576
+    },
+    "job": {
+      "status": "completed",
+      "output": {
+        "resolution": "1080p",
+        "fps": "source",
+        "quality": "high"
+      },
+      "settings": {
+        "denoise": 60,
+        "denoiseRadius": 3,
+        "sharpen": 25,
+        "brightness": 0,
+        "contrast": 105,
+        "saturation": 105
+      },
+      "completedFrames": 30,
+      "totalFrames": 30,
+      "frameCountExact": true,
+      "renderMs": 17047,
+      "encodeMs": 838,
+      "wallMs": 17885,
+      "computeMs": 2294.7999999998137,
+      "resultBytes": 248832000,
+      "videoBytes": 924341
+    }
+  },
+  "twoMinuteBoundary": {
+    "sourceSeconds": 120,
+    "sourceFrames": 7200,
+    "testSourceWidth": 32,
+    "testSourceHeight": 32,
+    "maximumMaterializedFrames": 24,
+    "scope": "prepare, first window and cancellation; not a full 7200-frame encode"
+  },
+  "limitations": [
+    "Same PC; not a distributed-device speed benchmark.",
+    "No full-length 1080p60 two-minute performance claim.",
+    "GPU filtering is distributed; final H.264 encoding remains on the server."
+  ]
+}

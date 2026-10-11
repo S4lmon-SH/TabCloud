@@ -19,7 +19,7 @@ test('hardware GPU video filters match every CPU byte, reuse devices and stop on
     test.skip(!result.available, `Hardware GPU unavailable: ${!result.available ? result.reason : ''}`);
     if (!result.available) return;
     expect(result.hardware).toBe(true); expect(result.deviceCreations).toBe(1);
-    expect(result.measurements).toHaveLength(5);
+    expect(result.measurements).toHaveLength(7);
     for (const measurement of result.measurements) {
       expect(measurement.maxDifference, JSON.stringify(measurement)).toBe(0);
       expect(measurement.dispatches).toBeGreaterThan(0);

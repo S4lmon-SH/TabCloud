@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { VIDEO_LIMITS, DEFAULT_VIDEO_PROCESSING, videoProcessingSettingsSchema, type VideoAssignment, type VideoJoinResult, type VideoRoomCreated, type VideoProcessingSettings, type VideoSnapshot, type VideoTaskResult } from '@tabcloud/shared';
+import { VIDEO_LIMITS, VIDEO_INPUT_EXTENSIONS, DEFAULT_VIDEO_PROCESSING, DEFAULT_VIDEO_OUTPUT, resolveVideoOutput, videoOutputSettingsSchema, videoProcessingSettingsSchema, type VideoAssignment, type VideoJoinResult, type VideoRoomCreated, type VideoProcessingSettings, type VideoOutputSettings, type VideoSnapshot, type VideoTaskResult } from '@tabcloud/shared';
 import type { VideoWorkerRequest, VideoWorkerResponse } from './video.worker';
 import { ApiConfigurationError, ApiReadinessError, apiUrl, waitForApiReady } from './api-origin';
 import { ResourceControls } from './ResourceControls';
@@ -7,6 +7,7 @@ import { detectDeviceResources, normalizeResourceLimits, type ResourceLimits } f
 
 import { planVideoResources, type VideoRenderStats } from './video-renderer';
 import { probeVideoGpu } from './video-gpu';
+import { prepareVideoTransfer, waitForVideoTransferRetry } from './video-transfer';
 
 const resourceStorageKey = 'tabcloud:video:resource-limits:v1';
 function savedResourceLimits(): ResourceLimits {
@@ -15,9 +16,11 @@ function savedResourceLimits(): ResourceLimits {
 }
 
 type Connection = 'connecting' | 'online' | 'error';
-type RoomActions = { consent: (enabled: boolean) => Promise<void>; start: (settings: VideoProcessingSettings) => Promise<void>; cancel: () => Promise<void>; upload: (file: File) => Promise<void>; cancelUpload: () => Promise<void> };
+type RoomActions = { consent: (enabled: boolean) => Promise<void>; start: (settings: VideoProcessingSettings, output: VideoOutputSettings) => Promise<void>; cancel: () => Promise<void>; upload: (file: File) => Promise<void>; cancelUpload: () => Promise<void> };
 const noActions: RoomActions = { consent: async () => {}, start: async () => {}, cancel: async () => {}, upload: async () => {}, cancelUpload: async () => {} };
 const statusNames = { rendering: '영상 처리 중', encoding: '영상으로 묶는 중', completed: '영상 완성', cancelled: '작업 취소됨', failed: '작업 실패', idle: '준비됨' };
+const phaseNames = { decoding: '다음 구간 준비 중', processing: '영상 처리 중', 'encoding-segment': '처리한 구간 저장 중', finalizing: '최종 영상 완성 중' };
+const frameRate = (fps: number) => `${Number(fps.toFixed(2))}fps`;
 const seconds = (ms: number | null | undefined) => ms == null ? '—' : ms >= 60_000 ? `${Math.floor(ms / 60_000)}분 ${Math.floor(ms / 1000) % 60}초` : `${(ms / 1000).toFixed(1)}초`;
 const participantKey = (roomId: string) => `tabcloud:video:participant:${roomId}`;
 const hostKey = (roomId: string) => `tabcloud:video:host:${roomId}`;
@@ -72,7 +75,7 @@ function Home() {
   return <div className="an-app vd-app"><header className="an-header"><Brand /><a className="an-header-link" href="/animation">3D 렌더 실험실 ↗</a></header>
     <main className="vd-home"><div className="vd-home-heading"><span className="an-eyebrow">Distributed video studio</span><h1>내 영상, 더 선명하게.<br /><span>함께 연결한 GPU로.</span></h1><p>영상을 올리고 기기를 연결하세요.<br />노이즈 제거부터 색 보정까지, 나눠서 처리해요.</p></div>
       <div className="vd-workflow" aria-hidden="true"><span><Icon type="film" />영상 업로드</span><i>→</i><span className="vd-workflow-gpu">GPU + CPU</span><i>→</i><span><Icon type="download" />완성된 영상</span></div>
-      <div className="an-home-actions"><section className="an-home-card"><h2>내 영상 작업하기</h2><p>MP4 · MOV · WebM, 최대 64 MB · 30초</p><button className="an-button primary" onClick={() => void createRoom()} disabled={creating}>{creating ? '방 만드는 중…' : '방 만들기'}<Icon type="arrow" /></button></section>
+      <div className="an-home-actions"><section className="an-home-card"><h2>내 영상 작업하기</h2><p>최대 1080p · 60fps · 2분<br />MP4 · MOV · WebM · MKV · AVI 등, 256 MiB</p><button className="an-button primary" onClick={() => void createRoom()} disabled={creating}>{creating ? '방 만드는 중…' : '방 만들기'}<Icon type="arrow" /></button></section>
         <form className="an-home-card" onSubmit={join}><h2>기기 연결하기</h2><p>초대 링크로 연산에 참여해요.</p><div className="an-join-controls"><label className="an-sr-only" htmlFor="video-join">초대 링크</label><input id="video-join" className="an-input" placeholder="초대 링크 붙여넣기" value={invite} onChange={(event) => setInvite(event.target.value)} required /><button className="an-button secondary" type="submit">참여하기<Icon type="arrow" /></button></div></form></div>
       {error && <div className="an-notice error" role="alert">{error}</div>}
     </main></div>;
@@ -85,6 +88,8 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
   const [activeFrame, setActiveFrame] = useState<number | null>(null);
   const [activeRows, setActiveRows] = useState(0);
   const [settings, setSettings] = useState<VideoProcessingSettings>({ ...DEFAULT_VIDEO_PROCESSING });
+  const [output, setOutput] = useState<VideoOutputSettings>({ ...DEFAULT_VIDEO_OUTPUT });
+  const outputRef = useRef(output);
   const [error, setError] = useState('');
   const [actionPending, setActionPending] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -179,7 +184,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
         if (notify) void api('/consent', { enabled: false }).catch(() => {});
       }
       roomRef.current = snapshot; setRoom(snapshot); setConnection('online');
-      if (snapshot.role !== 'host' && snapshot.job) setSettings(snapshot.job.settings);
+      if (snapshot.role !== 'host' && snapshot.job) { setSettings(snapshot.job.settings); setOutput(snapshot.job.output); outputRef.current = snapshot.job.output; }
       if (previousJob !== snapshot.job?.id) setSelectedFrame(null);
     }
     function disconnected(err: unknown) {
@@ -211,8 +216,15 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
           const assignment = lease;
           sourceAbort = new AbortController();
           const query = new URLSearchParams({ taskId: assignment.task.taskId, attemptId: assignment.attemptId });
-          const response = await fetch(apiUrl(`${endpoint}/source/${encodeURIComponent(assignment.task.jobId)}/${assignment.task.frameIndex}.rgba?${query}`), { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.any([sourceAbort.signal, AbortSignal.timeout(12_000)]) });
-          if (!response.ok) await readResponse(response);
+          const signal = AbortSignal.any([sourceAbort.signal, AbortSignal.timeout(45_000)]);
+          let response: Response;
+          for (let retry = 0; ; retry += 1) {
+            response = await fetch(apiUrl(`${endpoint}/source/${encodeURIComponent(assignment.task.jobId)}/${assignment.task.frameIndex}.rgba?${query}`), { headers: { Authorization: `Bearer ${token}` }, signal });
+            if (response.status !== 429 || retry >= 5) { if (!response.ok) await readResponse(response); break; }
+            await response.body?.cancel();
+            await waitForVideoTransferRetry(retry, signal);
+            if (disposed || pageHidden || !consent || current !== generation || lease !== assignment) return;
+          }
           const pixels = await response.arrayBuffer();
           if (disposed || pageHidden || !consent || current !== generation || !worker || lease !== assignment) return;
           sourceAbort = null;
@@ -256,16 +268,14 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
         try {
           const query = new URLSearchParams({ ...ids, computeMs: String(data.computeMs), engine: data.stats.frameGpuRows > 0 ? data.stats.frameCpuRows > 0 ? 'mixed' : 'gpu' : 'cpu' });
           const signal = AbortSignal.any([uploadAbort.signal, AbortSignal.timeout(60_000)]);
+          const transfer = await prepareVideoTransfer(data.pixels, signal);
+          if (disposed || pageHidden || current !== generation || lease !== assignment) return;
+          if (transfer.encoding) query.set('encoding', transfer.encoding);
           for (let retry = 0; ; retry += 1) {
-            const response = await fetch(apiUrl(`${endpoint}/result?${query}`), { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' }, body: data.pixels, signal });
+            const response = await fetch(apiUrl(`${endpoint}/result?${query}`), { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' }, body: transfer.body, signal });
             if (response.status !== 429 || retry >= 5) { await readResponse<{ accepted: true }>(response); break; }
             await response.body?.cancel();
-            const delay = Math.min(1000, 250 * 2 ** retry) + Math.random() * 150;
-            await new Promise<void>((resolve, reject) => {
-              const interrupted = () => { clearTimeout(retryTimer); reject(new DOMException('Upload stopped', 'AbortError')); };
-              const retryTimer = setTimeout(() => { signal.removeEventListener('abort', interrupted); resolve(); }, delay);
-              if (signal.aborted) interrupted(); else signal.addEventListener('abort', interrupted, { once: true });
-            });
+            await waitForVideoTransferRetry(retry, signal);
             if (disposed || current !== generation || lease !== assignment) return;
           }
           if (disposed || current !== generation || lease !== assignment) return;
@@ -296,8 +306,10 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
         return;
       }
       if (typeof Worker === 'undefined') { setError('Web Worker를 지원하는 최신 브라우저에서 참여해 주세요.'); return; }
-      const dimensions = roomRef.current?.job ?? roomRef.current?.source;
-      const plan = planVideoResources(dimensions?.width && dimensions?.height ? dimensions : { width: 1280, height: 720 }, limitsRef.current, deviceRef.current);
+      const currentJob = roomRef.current?.job;
+      const currentSource = roomRef.current?.source;
+      const dimensions = currentJob?.status === 'rendering' ? currentJob : currentSource?.status === 'ready' ? resolveVideoOutput(currentSource, outputRef.current) : { width: 1920, height: 1080 };
+      const plan = planVideoResources(dimensions, limitsRef.current, deviceRef.current);
       if (!plan.canRender) { setError(plan.reason || '사용할 자원을 선택해 주세요.'); return; }
       try {
         destroyWorker();
@@ -312,7 +324,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
     }
     actionsRef.current = {
       consent: changeConsent,
-      start: async (newSettings) => { setError(''); setView('processed'); try { apply(await api<VideoSnapshot>('/start', { settings: newSettings })); void requestTask(); } catch (err) { setError(err instanceof Error ? err.message : '작업을 시작하지 못했어요.'); } },
+      start: async (newSettings, newOutput) => { setError(''); setView('processed'); try { apply(await api<VideoSnapshot>('/start', { settings: newSettings, output: newOutput })); void requestTask(); } catch (err) { setError(err instanceof Error ? err.message : '작업을 시작하지 못했어요.'); } },
       cancel: async () => { destroyWorker(); setError(''); try { apply(await api<VideoSnapshot>('/cancel', {})); } catch (err) { setError(err instanceof Error ? err.message : '작업을 취소하지 못했어요.'); } },
       upload: async (file) => {
         sourceGeneration += 1; const current = sourceGeneration;
@@ -326,7 +338,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
             request.open('PUT', apiUrl(`${endpoint}/upload`));
             request.setRequestHeader('Authorization', `Bearer ${token}`);
             request.setRequestHeader('Content-Type', 'application/octet-stream');
-            request.timeout = 120_000;
+            request.timeout = 600_000;
             request.upload.onprogress = (event) => { if (event.lengthComputable && current === sourceGeneration && !disposed) setUploadProgress(Math.round(event.loaded / event.total * 100)); };
             request.onload = () => {
               let payload: VideoSnapshot & { message?: string };
@@ -406,7 +418,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
 
   const job = room?.job;
   const jobId = job?.id;
-  const currentPreview = selectedFrame !== null && job?.frames.includes(selectedFrame) ? selectedFrame : job?.frames.at(-1);
+  const currentPreview = selectedFrame !== null && (job?.frames.includes(selectedFrame) || selectedFrame < (job?.windowStart ?? 0)) ? selectedFrame : job?.frames.at(-1);
   useEffect(() => {
     setSelectedFrame(null); setPreviewUrl(''); setVideoUrl(''); setVideoError('');
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
@@ -479,8 +491,8 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
 
   function selectFile(file?: File) {
     if (!file || uploading || roomRef.current?.source?.status === 'preparing' || ['rendering', 'encoding'].includes(roomRef.current?.job?.status || '')) return;
-    if (!/\.(mp4|mov|webm)$/i.test(file.name)) { setError('MP4, MOV 또는 WebM 영상을 선택해 주세요.'); return; }
-    if (!file.size || file.size > VIDEO_LIMITS.maxUploadBytes) { setError('영상 크기는 0 MB 초과, 64 MB 이하여야 해요.'); return; }
+    if (!(VIDEO_INPUT_EXTENSIONS as readonly string[]).includes(file.name.split('.').at(-1)?.toLowerCase() ?? '')) { setError('지원하는 영상 파일을 선택해 주세요. MP4, MOV, WebM, MKV, AVI 등을 사용할 수 있어요.'); return; }
+    if (!file.size || file.size > VIDEO_LIMITS.maxUploadBytes) { setError('영상 크기는 0바이트 초과, 256 MiB 이하여야 해요.'); return; }
     if (sourceUrlRef.current) URL.revokeObjectURL(sourceUrlRef.current);
     sourceUrlRef.current = URL.createObjectURL(file); setSourceUrl(sourceUrlRef.current); setSourceName(file.name);
     void actionsRef.current.upload(file);
@@ -504,25 +516,42 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
     try { localStorage.setItem(resourceStorageKey, JSON.stringify(normalized)); } catch { /* In-memory settings still apply. */ }
     setResourceNotice('설정을 적용했어요. 연산 참여를 눌러 시작해 주세요.');
   }
+  function changeOutput(next: VideoOutputSettings) {
+    outputRef.current = next; setOutput(next);
+    resourceRevocations.current += 1; setResourceApplying(true);
+    void actionsRef.current.consent(false).finally(() => {
+      resourceRevocations.current -= 1;
+      if (resourceRevocations.current === 0) setResourceApplying(false);
+    });
+    setResourceNotice('출력 설정을 적용했어요. 연산 참여를 눌러 시작해 주세요.');
+  }
   function start() {
     const result = videoProcessingSettingsSchema.safeParse(settings);
+    const outputResult = videoOutputSettingsSchema.safeParse(output);
     if (!result.success) { setError('보정 값을 표시된 범위 안에서 선택해 주세요.'); return; }
-    void perform(() => actionsRef.current.start(result.data));
+    if (!outputResult.success) { setError('출력 설정을 확인해 주세요.'); return; }
+    void perform(() => actionsRef.current.start(result.data, outputResult.data));
   }
   const host = room?.role === 'host';
   const busy = job?.status === 'rendering' || job?.status === 'encoding';
   const preparing = source?.status === 'preparing';
   const editable = host && !busy && !actionPending && !uploading && !preparing;
-  const dimensions = (busy ? job : source)?.width ? (busy ? job : source)! : { width: 1280, height: 720 };
+  const selectedOutput = source?.status === 'ready' ? resolveVideoOutput(source, output) : null;
+  const dimensions = busy && job ? job : selectedOutput ?? { width: 1920, height: 1080 };
   const resourcePlan = planVideoResources(dimensions, limits, device);
-  const frames = job?.totalFrames ?? source?.frames ?? 0;
+  const frames = job?.totalFrames ?? (selectedOutput && source ? Math.min(VIDEO_LIMITS.maxFrames, Math.ceil(source.durationSeconds * selectedOutput.fps)) : source?.frames) ?? 0;
   const completed = job?.completedFrames ?? 0;
-  const percent = frames ? completed / frames * 100 : 0;
+  const frameCountExact = job?.frameCountExact ?? false;
+  const percent = job?.status === 'completed' ? 100 : frames ? Math.min(frameCountExact ? 100 : 99, completed / frames * 100) : 0;
   const connectedParticipants = room?.participants.filter((participant) => participant.connected) ?? [];
   const completedSet = new Set(job?.frames ?? []);
+  const isFrameComplete = (index: number) => index < (job?.windowStart ?? 0) || completedSet.has(index);
   const assignedSet = new Set(room?.participants.filter((participant) => participant.activeFrame !== null).map((participant) => participant.activeFrame) ?? []);
   const elapsed = job ? job.wallMs ?? Math.max(0, (job.finishedAt ?? clock) - job.startedAt) : null;
   const state = job?.status ?? 'idle';
+  const phaseLabel = busy && job ? phaseNames[job.phase] : statusNames[state];
+  const timelineEnd = Math.min(frames, Math.max(120, job?.windowEnd ?? 0, completed));
+  const timelineStart = Math.max(0, timelineEnd - 120);
   const self = room?.participants.find((participant) => participant.id === room.selfId);
   const filterFields: { key: keyof VideoProcessingSettings; label: string; min: number; max: number }[] = [
     { key: 'denoise', label: '노이즈 제거', min: 0, max: 100 },
@@ -537,24 +566,31 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
       <input ref={inviteRef} className={showInvite ? 'an-input an-invite-fallback' : 'an-sr-only'} aria-label="초대 링크" data-testid="invite-link" value={inviteLink} readOnly tabIndex={showInvite ? 0 : -1} />
       {error && <div className="an-notice error" role="alert">{error}</div>}
       <div className="an-studio-grid"><div className="an-main-column">
-        {host && <section className="an-card an-card-pad vd-source-card"><div className="an-section-head"><h2>원본 영상</h2><span className="an-state" data-testid="video-source-status" data-status={source?.status ?? 'empty'}>{uploading ? `${uploadProgress}% 업로드` : preparing ? '프레임 준비 중' : source?.status === 'ready' ? '준비 완료' : source?.status === 'failed' ? '준비 실패' : '업로드 대기'}</span></div>
-          <input ref={fileRef} type="file" className="an-sr-only" accept=".mp4,.mov,.webm,video/mp4,video/quicktime,video/webm" aria-label="영상 업로드" data-testid="video-upload" disabled={!editable || connection !== 'online'} onChange={(event) => { selectFile(event.currentTarget.files?.[0]); event.currentTarget.value = ''; }} />
-          <button className={`vd-upload ${source?.status === 'ready' ? 'ready' : ''}`} onClick={() => fileRef.current?.click()} disabled={!editable || connection !== 'online'} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (editable) selectFile(event.dataTransfer.files[0]); }}><span className="vd-upload-icon"><Icon type="film" /></span><span><strong>{source?.status === 'ready' ? sourceName || '업로드한 영상' : uploading ? '영상을 업로드하고 있어요' : preparing ? '영상을 준비하고 있어요' : '영상을 선택하거나 여기로 끌어오세요'}</strong><small>{source?.status === 'ready' ? `${source.width} × ${source.height} · ${source.durationSeconds.toFixed(1)}초 · ${source.frames}프레임 · ${source.hasAudio ? '원본 오디오 유지' : '오디오 없음'}` : 'MP4 · MOV · WebM / 최대 64 MB · 30초'}</small></span><span className="vd-upload-action">{source?.status === 'ready' ? '변경' : '선택'}</span></button>
+        {host && <section className="an-card an-card-pad vd-source-card"><div className="an-section-head"><h2>원본 영상</h2><span className="an-state" data-testid="video-source-status" data-status={source?.status ?? 'empty'}>{uploading ? `${uploadProgress}% 업로드` : preparing ? '영상 확인 중' : source?.status === 'ready' ? '준비 완료' : source?.status === 'failed' ? '준비 실패' : '업로드 대기'}</span></div>
+          <input ref={fileRef} type="file" className="an-sr-only" accept={VIDEO_INPUT_EXTENSIONS.map((extension) => `.${extension}`).join(',')} aria-label="영상 업로드" data-testid="video-upload" disabled={!editable || connection !== 'online'} onChange={(event) => { selectFile(event.currentTarget.files?.[0]); event.currentTarget.value = ''; }} />
+          <button className={`vd-upload ${source?.status === 'ready' ? 'ready' : ''}`} onClick={() => fileRef.current?.click()} disabled={!editable || connection !== 'online'} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (editable) selectFile(event.dataTransfer.files[0]); }}><span className="vd-upload-icon"><Icon type="film" /></span><span><strong>{source?.status === 'ready' ? sourceName || '업로드한 영상' : uploading ? '영상을 업로드하고 있어요' : preparing ? '영상을 확인하고 있어요' : '영상을 선택하거나 여기로 끌어오세요'}</strong><small data-testid="video-source-info">{source?.status === 'ready' ? `${source.width} × ${source.height} · ${frameRate(source.originalFps ?? source.fps)} · ${source.durationSeconds.toFixed(1)}초 · ${source.hasAudio ? '원본 오디오 유지' : '오디오 없음'}` : 'MP4 · MOV · WebM · MKV · AVI 등 / 최대 256 MiB · 2분'}</small></span><span className="vd-upload-action">{source?.status === 'ready' ? '변경' : '선택'}</span></button>
           {uploading && <progress className="vd-upload-progress" aria-label="영상 업로드 진행률" value={uploadProgress} max={100} />}
           {(uploading || preparing) && <button className="an-button small neutral" disabled={actionPending} onClick={() => void perform(() => actionsRef.current.cancelUpload())}>업로드 취소</button>}
           {source?.failureReason && <div className="an-notice error" role="alert">{source.failureReason}</div>}
-          <p className="an-subtle-note">초대한 기기로 영상 프레임을 나눠 보내요. 결과는 최대 720p · 24fps예요.</p>
+          <p className="an-subtle-note">초대한 기기로 영상 프레임을 나눠 보내요. 가로·세로 영상 모두 최대 1080p로 저장해요.</p>
         </section>}
-        <section className="an-card"><div className="an-section-head"><div className="vd-preview-tabs" role="group" aria-label="영상 미리보기 선택">{host && <button aria-pressed={view === 'original'} onClick={() => setView('original')}>원본</button>}<button aria-pressed={view === 'processed' || !host} onClick={() => setView('processed')}>처리 결과</button></div><span className={`an-state ${state}`} data-testid="video-status" data-status={state} role="status">{statusNames[state]}</span></div>
+        <section className="an-card"><div className="an-section-head"><div className="vd-preview-tabs" role="group" aria-label="영상 미리보기 선택">{host && <button aria-pressed={view === 'original'} onClick={() => setView('original')}>원본</button>}<button aria-pressed={view === 'processed' || !host} onClick={() => setView('processed')}>처리 결과</button></div><span className={`an-state ${state}`} data-testid="video-status" data-status={state} data-phase={job?.phase} role="status">{phaseLabel}</span></div>
           <div className="an-preview" data-testid="video-preview">{view === 'original' && host ? sourceUrl ? <video data-testid="source-video" src={sourceUrl} controls playsInline preload="metadata" aria-label="업로드한 원본 영상" onError={() => { setSourceUrl(''); }} /> : sourcePreviewUrl ? <img src={sourcePreviewUrl} alt="업로드한 원본 영상의 첫 프레임" /> : <div className="an-empty"><span className="an-empty-symbol"><Icon type="film" /></span><p>처리할 영상을 올려 주세요.</p></div> : videoUrl ? <video data-testid="final-video" src={videoUrl} controls playsInline preload="auto" aria-label="처리가 완료된 영상" /> : previewUrl ? <><img src={previewUrl} alt={`${(currentPreview ?? 0) + 1}번째 처리 프레임`} /><span className="an-frame-label">FRAME {String((currentPreview ?? 0) + 1).padStart(3, '0')}</span></> : <div className="an-empty"><span className="an-empty-symbol"><Icon type="film" /></span><p>{state === 'rendering' ? '프레임을 처리하고 있어요.' : '처리된 영상이 여기에 나타나요.'}</p></div>}</div>
-          <div className="an-progress-section"><div className="an-progress-heading"><strong>{Math.floor(percent)}<span>%</span></strong><span>{completed.toLocaleString()} / {frames.toLocaleString()} 프레임</span></div><div className="an-progress-track" role="progressbar" aria-label="완료 프레임" aria-valuenow={completed} aria-valuemin={0} aria-valuemax={Math.max(1, frames)} data-testid="frame-progress" data-completed={completed}><div className="an-progress-fill" style={{ width: `${percent}%` }} /></div>
+          <div className="an-progress-section"><div className="an-progress-heading"><strong>{Math.floor(percent)}<span>%</span></strong><span>{completed.toLocaleString()} / {!frameCountExact && frames > 0 ? '약 ' : ''}{frames.toLocaleString()} 프레임</span></div><div className="an-progress-track" role="progressbar" aria-label="완료 프레임" aria-valuenow={completed} aria-valuemin={0} aria-valuemax={Math.max(1, frames, completed)} data-testid="frame-progress" data-completed={completed}><div className="an-progress-fill" style={{ width: `${percent}%` }} /></div>
             <dl className="an-render-stats"><div><dt>연결된 기기</dt><dd>{connectedParticipants.length}대</dd></div><div><dt>처리 시간</dt><dd>{seconds(elapsed)}</dd></div><div><dt>GPU 처리 프레임</dt><dd data-testid="gpu-total-frames">{room?.participants.reduce((count, participant) => count + participant.gpuFrames, 0) ?? 0}개</dd></div></dl></div>
           {job?.failureReason && <div className="an-job-error"><div className="an-notice error" role="alert">{job.failureReason}</div></div>}
           {videoError && <div className="an-job-error"><div className="an-notice error" role="alert">{videoError} <button className="an-button small neutral" onClick={() => setVideoRetry((value) => value + 1)}>다시 가져오기</button></div></div>}
           {state === 'completed' && <div className="an-result-actions">{videoUrl ? <a className="an-button secondary" href={videoUrl} download={`tabcloud-${roomId}.mp4`} role="button"><Icon type="download" />영상 다운로드</a> : <button className="an-button secondary" disabled>영상 다운로드</button>}</div>}
         </section>
-        {frames > 0 && <section className="an-card"><div className="an-section-head"><h2>프레임 타임라인</h2><span className="an-timeline-count">{frames} FRAMES</span></div><div className="an-frame-grid" data-testid="frame-grid">{Array.from({ length: Math.max(0, Math.min(frames, VIDEO_LIMITS.maxFrames)) }, (_, index) => <button key={index} className={`an-frame ${completedSet.has(index) ? 'completed' : assignedSet.has(index) ? 'assigned' : ''} ${selectedFrame === index ? 'selected' : ''}`} disabled={!completedSet.has(index) || Boolean(videoUrl)} aria-label={`프레임 ${index + 1}: ${completedSet.has(index) ? '완료' : assignedSet.has(index) ? '계산 중' : '대기'}`} onClick={() => { setSelectedFrame(index); setView('processed'); }} />)}</div></section>}
+        {frames > 0 && <section className="an-card"><div className="an-section-head"><h2>프레임 타임라인</h2><span className="an-timeline-count">{timelineStart + 1}–{timelineEnd} / {frames.toLocaleString()}</span></div><div className="an-frame-grid" data-testid="frame-grid">{Array.from({ length: Math.max(0, timelineEnd - timelineStart) }, (_, offset) => { const index = timelineStart + offset; return <button key={index} className={`an-frame ${isFrameComplete(index) ? 'completed' : assignedSet.has(index) ? 'assigned' : ''} ${selectedFrame === index ? 'selected' : ''}`} disabled={!isFrameComplete(index) || Boolean(videoUrl)} aria-label={`프레임 ${index + 1}: ${isFrameComplete(index) ? '완료' : assignedSet.has(index) ? '계산 중' : '대기'}`} onClick={() => { setSelectedFrame(index); setView('processed'); }} />; })}</div></section>}
       </div><aside className="an-sidebar">
+        <section className="an-card an-card-pad"><h2>출력 설정</h2><div className="vd-output-fields">
+          <label><span>해상도</span><select className="an-input" aria-label="출력 해상도" value={output.resolution} disabled={!editable} onChange={(event) => changeOutput({ ...output, resolution: event.target.value as VideoOutputSettings['resolution'] })}><option value="1080p">1080p · Full HD</option><option value="720p">720p · HD</option></select></label>
+          <label><span>프레임률</span><select className="an-input" aria-label="프레임률" value={output.fps} disabled={!editable} onChange={(event) => changeOutput({ ...output, fps: event.target.value === 'source' ? 'source' : Number(event.target.value) as 24 | 30 | 60 })}><option value="source">원본 유지 · 최대 60fps</option><option value="24">24fps</option><option value="30">30fps</option><option value="60">60fps</option></select></label>
+          <label><span>화질</span><select className="an-input" aria-label="출력 화질" value={output.quality} disabled={!editable} onChange={(event) => changeOutput({ ...output, quality: event.target.value as VideoOutputSettings['quality'] })}><option value="high">높은 화질</option><option value="balanced">균형</option><option value="compact">작은 파일</option></select></label>
+        </div>{selectedOutput && <p className="vd-output-summary" data-testid="video-output-summary">{selectedOutput.width} × {selectedOutput.height} · {frameRate(selectedOutput.fps)}<span>MP4 · 원본보다 확대하지 않아요</span></p>}
+          <p className="an-subtle-note">높은 해상도와 프레임률은 처리 시간·전송량이 늘어나요.</p>
+        </section>
         <section className="an-card an-card-pad"><h2>영상 보정</h2><div className="vd-filter-fields">{filterFields.map((field) => <label key={field.key}><span>{field.label}<output>{settings[field.key]}</output></span><input type="range" aria-label={field.label} min={field.min} max={field.max} step={1} value={settings[field.key]} disabled={!editable} onChange={(event) => setSettings((previous) => ({ ...previous, [field.key]: Number(event.target.value) }))} /></label>)}</div>
           <details className="an-settings-details"><summary>고급 설정</summary><label className="vd-radius">노이즈 제거 반경<input className="an-input" type="number" min={1} max={4} step={1} value={settings.denoiseRadius} disabled={!editable} onChange={(event) => setSettings((previous) => ({ ...previous, denoiseRadius: Number(event.target.value) }))} /></label><button className="an-button small neutral" disabled={!editable} onClick={() => setSettings({ ...DEFAULT_VIDEO_PROCESSING })}>기본값으로</button></details>
           <div className="an-start-action">{host ? busy ? <button className="an-button danger full" onClick={() => void perform(() => actionsRef.current.cancel())} disabled={actionPending || connection !== 'online'}><Icon type="stop" />작업 취소</button> : <button className="an-button primary full" onClick={start} disabled={!editable || source?.status !== 'ready' || connection !== 'online'}><Icon type="play" />처리 시작</button> : <p className="an-subtle-note">호스트가 영상 작업을 시작해요.</p>}</div>
@@ -567,7 +603,7 @@ function Studio({ roomId, inviteToken }: { roomId: string; inviteToken: string }
           <p className="an-subtle-note vd-consent-note">참여하면 선택한 한도로 연산해요. 발열·배터리 소모가 생길 수 있어요.</p><button className={`an-button full ${consented ? 'neutral' : 'secondary'}`} onClick={() => void perform(() => actionsRef.current.consent(!consented))} disabled={actionPending || resourceApplying || uploading || preparing || connection !== 'online' || (!consented && (!resourcePlan.canRender || Boolean(job && job.status !== 'rendering')))}><Icon type={consented ? 'stop' : 'play'} />{consented ? '연산 중단' : '연산 참여'}</button>
         </section>
         <section className="an-card an-card-pad"><div className="an-participant-heading"><h2>함께하는 기기</h2><span>{connectedParticipants.length}</span></div><ul className="an-participants">{room?.participants.map((participant, index) => <li key={participant.id} className={`an-participant ${participant.connected ? '' : 'offline'}`} data-testid="participant" data-self={participant.id === room.selfId ? 'true' : 'false'} data-completed={participant.completedFrames} data-connected={participant.connected ? 'true' : 'false'}><span className="an-avatar">{String(index + 1).padStart(2, '0')}</span><div className="an-participant-name"><strong>{participant.name}{participant.id === room.selfId && <i>내 기기</i>}</strong><small>{!participant.connected ? '연결 끊김' : participant.activeFrame !== null ? '프레임 처리 중' : participant.consented ? '연산 대기 중' : '구경 중'} · GPU {participant.gpuFrames}</small></div><span className="an-participant-contribution"><b>{participant.completedFrames}</b> 프레임</span></li>)}</ul></section>
-        <details className="an-info-details"><summary>작업 정보</summary><p>참여한 기기가 프레임을 받아 GPU·CPU로 보정해요. 완료한 기기가 다음 프레임을 가져가요. 서버는 영상 분리와 MP4 인코딩을 담당해요.</p>{job && <p>프레임 처리 {seconds(job.renderMs)} · 인코딩 {seconds(job.encodeMs)}<br />전송 결과 {(job.resultBytes / 1024 / 1024).toFixed(1)} MB · 재배정 {job.retries}회</p>}<p>여러 탭의 자원 한도는 합산돼요. 방과 영상은 만료되거나 서버가 재시작되면 삭제돼요.</p></details>
+        <details className="an-info-details"><summary>작업 정보</summary><p>참여한 기기가 프레임을 받아 GPU·CPU로 보정해요. 완료한 기기가 다음 프레임을 가져가요. 서버는 영상 분리와 MP4 인코딩을 담당해요.</p>{job && <p>프레임 처리 {seconds(job.renderMs)} · 인코딩 {seconds(job.encodeMs)}<br />처리 데이터 {(job.resultBytes / 1024 / 1024).toFixed(1)} MB · 재배정 {job.retries}회</p>}<p>여러 탭의 자원 한도는 합산돼요. 방과 영상은 만료되거나 서버가 재시작되면 삭제돼요.</p></details>
       </aside></div>
     </main></div>;
 }
